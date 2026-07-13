@@ -42,6 +42,7 @@ import { createNewIssueDraftSlice } from './slices/new-issue-draft'
 import { createRemoteServerUpdatesSlice } from './slices/remote-server-updates'
 import { e2eConfig } from '@/lib/e2e-config'
 import { registerHttpLinkStoreAccessor } from '@/lib/http-link-routing'
+import { registerTelemetryAgentCatalogSource } from '@/lib/telemetry-agent-kind'
 
 export const useAppStore = create<AppState>()((...a) => ({
   ...createRepoSlice(...a),
@@ -87,6 +88,10 @@ export const useAppStore = create<AppState>()((...a) => ({
 }))
 
 registerHttpLinkStoreAccessor(() => useAppStore.getState())
+
+// Why: telemetry-agent-kind cannot import the store (slices reach it through
+// the launch libs, which would form an init cycle); inject the source instead.
+registerTelemetryAgentCatalogSource(() => useAppStore.getState().settings)
 
 export type { AppState } from './types'
 
