@@ -63,6 +63,12 @@ export const AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY =
 export const FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY = 'files.mutation-ownership.v1' as const
 export const FILE_MUTATION_OWNERSHIP_UPDATE_REQUIRED_MESSAGE =
   'Remote file changes require a newer Orca server. Update the HUB and try again.'
+// Why: signals the host resolves the v1 identity-only `agentLaunch` request
+// (selection + intent + prompt only; the host owns command/env/host-identity
+// resolution). Mobile/paired-web clients negotiate on this before sending an
+// identity-only launch; without it they keep assembling the legacy startupCommand
+// for one release. Static — advertised for every build once this ships.
+export const AGENT_LAUNCH_IDENTITY_RUNTIME_CAPABILITY = 'agent-launch.identity.v1' as const
 
 export const RUNTIME_CAPABILITIES = [
   'runtime.status.compat.v1',
@@ -85,7 +91,8 @@ export const RUNTIME_CAPABILITIES = [
   TERMINAL_CREATE_IDEMPOTENCY_RUNTIME_CAPABILITY,
   REMOTE_SERVER_UPDATE_CAPABILITY,
   AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY,
-  FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY
+  FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY,
+  AGENT_LAUNCH_IDENTITY_RUNTIME_CAPABILITY
 ] as const
 
 export type RuntimeCapability = (typeof RUNTIME_CAPABILITIES)[number] | (string & {})
