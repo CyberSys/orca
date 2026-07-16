@@ -131,6 +131,10 @@ export type PtyProcessInfo = {
   /** Trusted ORCA_TERMINAL_HANDLE exported into this PTY, when known. */
   terminalHandle?: string
   agentSessionOwners?: AgentSessionOwnerBinding[]
+  /** Host admission launch token the provider persisted at spawn (see
+   *  PtySpawnOptions.launchToken), surfaced on re-list so crash reconciliation
+   *  can rejoin a main-surviving terminal to its pending launch by token. */
+  launchToken?: string
 }
 
 type PtyProbeOptions = { signal?: AbortSignal }
