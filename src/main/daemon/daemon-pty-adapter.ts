@@ -922,7 +922,10 @@ export class DaemonPtyAdapter implements IPtyProvider {
           title: 'shell',
           ...(worktreeId ? { worktreeId } : {}),
           ...(s.terminalHandle ? { terminalHandle: s.terminalHandle } : {}),
-          ...this.validatedAgentSessionOwners(s.agentSessionOwners)
+          ...this.validatedAgentSessionOwners(s.agentSessionOwners),
+          // Crash reconcile matches pending launches by re-listed token; dropping
+          // it here would false-settle spawn_failed for live daemon PTYs.
+          ...(s.launchToken ? { launchToken: s.launchToken } : {})
         }
       })
   }

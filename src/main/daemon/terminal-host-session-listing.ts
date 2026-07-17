@@ -19,6 +19,8 @@ export function listLiveTerminalHostSessions(
       shellState: session.shellState,
       isAlive: true,
       ...(session.terminalHandle ? { terminalHandle: session.terminalHandle } : {}),
+      // Crash reconciliation rejoins daemon-surviving terminals by launch token.
+      ...(session.launchToken ? { launchToken: session.launchToken } : {}),
       pid: session.pid,
       cwd: session.getCwd(),
       cols: size?.cols ?? 0,
