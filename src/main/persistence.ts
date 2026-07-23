@@ -78,10 +78,8 @@ import {
   buildWorkspaceRunContext
 } from '../shared/task-source-context'
 import type { MigrationUnsupportedPtyEntry } from '../shared/agent-status-types'
-import {
-  createPinnedPreV1Backup,
-  migrateAgentCatalogSchema
-} from './agent-launch/agent-catalog-schema-migration'
+import { createPinnedPreV1Backup } from './agent-launch/agent-catalog-pre-v1-backup'
+import { migrateAgentCatalogSchema } from '../shared/agent-catalog-schema-migration'
 import { MOBILE_PAIRING_USERDATA_FILES } from './runtime/mobile-pairing-files'
 import { normalizePersistedMobileClientTabSelections } from './runtime/client-session-tab-selection-persistence'
 import { sanitizeWorkspaceSessionTerminalRetirements } from './runtime/mobile-session-terminal-persistence-retirement'
