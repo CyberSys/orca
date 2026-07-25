@@ -12,9 +12,10 @@ export const OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS = 30_000
 /**
  * Three distinct outcomes, deliberately not collapsed into `''`:
  * - `undefined` — never probed.
- * - `resolved` — the registry answered; `shell` is `''` when no DefaultShell is set.
- *   Cached for the process lifetime, same as before.
- * - `failed` — the probe itself failed. Suppresses re-probing only until `retryAtMs`,
+ * - `resolved` — reg.exe answered; `shell` is `''` when no DefaultShell is set
+ *   (which reg.exe reports as a non-zero exit). Cached for the process lifetime,
+ *   same as before.
+ * - `failed` — the probe never completed. Suppresses re-probing only until `retryAtMs`,
  *   so one transient registry error cannot permanently stop honoring the host's
  *   configured OpenSSH shell.
  */
@@ -24,6 +25,22 @@ type DefaultShellProbe =
 
 let probe: DefaultShellProbe | undefined
 let inFlight: Promise<string> | undefined
+
+/**
+ * Did reg.exe run to completion and answer, or did the probe itself never finish?
+ * A non-zero exit means "DefaultShell is not readable/set" — the default OpenSSH
+ * install, where the value simply does not exist — which is authoritative, not a
+ * failure. Only a probe killed by the timeout or that failed to spawn is retryable.
+ * Why exit code and not stderr text: reg.exe messages are localized.
+ */
+function probeCompleted(error: unknown): boolean {
+  const { killed, signal, code } = (error ?? {}) as {
+    killed?: boolean
+    signal?: NodeJS.Signals | null
+    code?: number | string | null
+  }
+  return killed !== true && signal == null && typeof code === 'number'
+}
 
 async function queryDefaultShell(): Promise<string> {
   const { stdout } = await execFile(
@@ -53,8 +70,10 @@ export async function readOpenSshDefaultShell(): Promise<string> {
       probe = { kind: 'resolved', shell }
       return shell
     })
-    .catch(() => {
-      probe = { kind: 'failed', retryAtMs: Date.now() + OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS }
+    .catch((error: unknown) => {
+      probe = probeCompleted(error)
+        ? { kind: 'resolved', shell: '' }
+        : { kind: 'failed', retryAtMs: Date.now() + OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS }
       return ''
     })
     .finally(() => {
