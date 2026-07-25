@@ -242,6 +242,7 @@ import {
 import { parsePtySessionId } from '../../shared/pty-session-id-format'
 import { clampLinearIssueListLimit } from '../../shared/linear-issue-read-limits'
 import { isFolderRepo } from '../../shared/repo-kind'
+import { mapWithConcurrency } from '../../shared/map-with-concurrency'
 import { DEFAULT_WORKSPACE_STATUS_ID } from '../../shared/workspace-statuses'
 import {
   buildSetupRunnerCommand,
@@ -2274,15 +2275,37 @@ type WorktreeLineageResolution =
       warnings: WorktreeLineageWarning[]
     }
 
+/**
+ * `missing_repo_path` — the repo directory is gone, so every scan spawns git only to get ENOENT.
+ * `scan_failed` — git or the SSH provider ran and errored. Absent failure = a cheap in-memory
+ * miss (no provider attached yet) that must keep retrying at full speed.
+ */
+type WorktreeScanFailureKind = 'missing_repo_path' | 'scan_failed'
+
 type RuntimeWorktreeScanResult =
   | { ok: true; worktrees: GitWorktreeInfo[] }
-  | { ok: false; worktrees: GitWorktreeInfo[] }
+  | { ok: false; worktrees: GitWorktreeInfo[]; failureKind?: WorktreeScanFailureKind }
 
 type RuntimeWorktreeScanCache = {
   generation: number
   runtimeKey: string
   result: Extract<RuntimeWorktreeScanResult, { ok: true }>
   expiresAt: number
+}
+
+type RuntimeWorktreeScanBackoff = {
+  generation: number
+  runtimeKey: string
+  kind: WorktreeScanFailureKind
+  failures: number
+  retryAt: number
+}
+
+/** Fleet context that turns the flat per-repo scan TTL into a bounded global spawn rate. */
+type WorktreeScanFleet = {
+  /** Repos that actually shell out to git; folder repos resolve in memory. */
+  scannedRepoCount: number
+  activeRepoIds: ReadonlySet<string>
 }
 
 type RuntimeWorktreeScanInFlight = {
@@ -2534,6 +2557,7 @@ export class OrcaRuntimeService {
   private worktreeScanGenerations = new Map<string, number>()
   private worktreeScanCache = new Map<string, RuntimeWorktreeScanCache>()
   private worktreeScanInFlight = new Map<string, RuntimeWorktreeScanInFlight>()
+  private worktreeScanBackoff = new Map<string, RuntimeWorktreeScanBackoff>()
   private cloneInFlightByPath = new Map<string, Promise<void>>()
   private agentDetector: AgentDetector | null = null
   private ptyForegroundAgentRefreshes = new Map<string, PtyForegroundAgentRefresh>()
@@ -24741,8 +24765,13 @@ export class OrcaRuntimeService {
         getAgentLaunchPlatformForRepo(repo, projectRuntimeByRepoId.get(repo.id))
       ])
     )
-    const perRepoWorktrees = await Promise.all(
-      repos.map(async (repo) => {
+    const fleet = this.resolveWorktreeScanFleet(repos)
+    // Why: every repo's scan TTL expires in the same pass, so an uncapped map spawned one git per
+    // repo simultaneously. Cap it like the worktrees:list sibling path (crash-cluster C2).
+    const perRepoWorktrees = await mapWithConcurrency(
+      repos,
+      WORKTREE_SCAN_CONCURRENCY,
+      async (repo) => {
         if (isFolderRepo(repo)) {
           return listRuntimeFolderWorkspaces(this.requireStore(), repo).map((worktree) => ({
             ...worktree,
@@ -24763,7 +24792,7 @@ export class OrcaRuntimeService {
         }
         // Why: mobile startup shares this path, so a slow repo scan degrades one repo's metadata instead of blocking all session loading.
         const scan = await withTimeout(
-          this.listRepoWorktreesForResolution(repo, projectRuntimeByRepoId),
+          this.listRepoWorktreesForResolution(repo, projectRuntimeByRepoId, fleet),
           RESOLVED_WORKTREE_REPO_TIMEOUT_MS,
           { ok: false, worktrees: [] }
         )
@@ -24799,7 +24828,7 @@ export class OrcaRuntimeService {
             comment: merged.comment
           }
         })
-      })
+      }
     )
     const worktrees = projectResolvedWorktreeLineage(
       perRepoWorktrees.flat(),
@@ -24858,9 +24887,86 @@ export class OrcaRuntimeService {
     }
   }
 
+  /**
+   * Repos with a live pane stay on the eager TTL; the rest share a global spawn budget so the
+   * steady-state git rate stops scaling linearly with how many repos are registered.
+   */
+  private resolveWorktreeScanFleet(repos: readonly Repo[]): WorktreeScanFleet {
+    const activeRepoIds = new Set<string>()
+    for (const pty of this.ptysById.values()) {
+      if (!pty.connected) {
+        continue
+      }
+      const repoId = splitWorktreeId(pty.worktreeId)?.repoId
+      if (repoId) {
+        activeRepoIds.add(repoId)
+      }
+    }
+    return {
+      scannedRepoCount: repos.reduce((count, repo) => (isFolderRepo(repo) ? count : count + 1), 0),
+      activeRepoIds
+    }
+  }
+
+  /** Reproduces what a live failing scan would return, without paying the spawn again. */
+  private buildBackedOffWorktreeScanResult(repo: Repo): RuntimeWorktreeScanResult {
+    return {
+      ok: false,
+      worktrees: repo.connectionId ? this.listStoredSshWorktreesForResolution(repo) : []
+    }
+  }
+
+  private recordWorktreeScanFailure(
+    repo: Repo,
+    kind: WorktreeScanFailureKind,
+    generation: number,
+    runtimeKey: string
+  ): void {
+    const now = Date.now()
+    const previous = this.worktreeScanBackoff.get(repo.id)
+    const continued = previous?.generation === generation && previous.runtimeKey === runtimeKey
+    const failures = continued ? previous.failures + 1 : 1
+    if (kind === 'missing_repo_path' && (!continued || previous.kind !== 'missing_repo_path')) {
+      console.warn(
+        `[runtime] repo directory missing, backing off worktree scans: ${repo.id} (${repo.path})`
+      )
+    }
+    this.worktreeScanBackoff.set(repo.id, {
+      generation,
+      runtimeKey,
+      kind,
+      failures,
+      retryAt: now + resolveWorktreeScanRetryDelayMs(kind, failures)
+    })
+  }
+
+  private clearWorktreeScanFailure(repo: Repo): void {
+    const previous = this.worktreeScanBackoff.get(repo.id)
+    if (!previous) {
+      return
+    }
+    this.worktreeScanBackoff.delete(repo.id)
+    if (previous.kind === 'missing_repo_path') {
+      console.warn(`[runtime] repo directory is back, resuming worktree scans: ${repo.id}`)
+    }
+  }
+
+  /** Repos whose directory is gone; scans are suppressed until the backoff window elapses. */
+  listReposMissingOnDisk(): string[] {
+    return [...this.worktreeScanBackoff.entries()]
+      .filter(([, backoff]) => backoff.kind === 'missing_repo_path')
+      .map(([repoId]) => repoId)
+  }
+
+  /**
+   * `sweepFleet` is set only by the periodic all-repo sweep — the path that produced the spawn
+   * storm. Explicit user-triggered scans pass nothing so they never read or write the backoff and
+   * always get a fresh attempt.
+   */
   private async listRepoWorktreesForResolution(
     repo: Repo,
-    projectRuntimeByRepoId?: ReadonlyMap<string, ProjectExecutionRuntimeResolution>
+    projectRuntimeByRepoId?: ReadonlyMap<string, ProjectExecutionRuntimeResolution>,
+    sweepFleet?: WorktreeScanFleet
   ): Promise<RuntimeWorktreeScanResult> {
     const now = Date.now()
     const generation = this.worktreeScanGenerations.get(repo.id) ?? 0
@@ -24884,6 +24990,14 @@ export class OrcaRuntimeService {
     ) {
       return cached.result
     }
+    const backoff = sweepFleet ? this.worktreeScanBackoff.get(repo.id) : undefined
+    if (
+      backoff?.generation === generation &&
+      backoff.runtimeKey === runtimeKey &&
+      backoff.retryAt > now
+    ) {
+      return this.buildBackedOffWorktreeScanResult(repo)
+    }
     const inFlight = this.worktreeScanInFlight.get(repo.id)
     if (inFlight?.generation === generation && inFlight.runtimeKey === runtimeKey) {
       return inFlight.promise
@@ -24893,16 +25007,22 @@ export class OrcaRuntimeService {
     try {
       const result = await promise
       if (
-        result.ok &&
         generation === (this.worktreeScanGenerations.get(repo.id) ?? 0) &&
         this.worktreeScanInFlight.get(repo.id)?.promise === promise
       ) {
-        this.worktreeScanCache.set(repo.id, {
-          generation,
-          runtimeKey,
-          result,
-          expiresAt: Date.now() + resolveWorktreeScanCacheTtlMs(repo)
-        })
+        if (result.ok) {
+          this.clearWorktreeScanFailure(repo)
+          this.worktreeScanCache.set(repo.id, {
+            generation,
+            runtimeKey,
+            result,
+            expiresAt: Date.now() + resolveWorktreeScanCacheTtlMs(repo, sweepFleet)
+          })
+        } else if (sweepFleet && result.failureKind) {
+          // Why: without this a missing repo directory re-spawns git every TTL forever with no
+          // backoff and nothing surfaced (crash-cluster C2: 12 repos, 770 ENOENTs, 0 successes).
+          this.recordWorktreeScanFailure(repo, result.failureKind, generation, runtimeKey)
+        }
       }
       return result
     } finally {
@@ -24917,22 +25037,37 @@ export class OrcaRuntimeService {
     projectRuntime: ProjectExecutionRuntimeResolution | undefined
   ): Promise<RuntimeWorktreeScanResult> {
     if (!repo.connectionId) {
-      return {
-        ok: true,
-        worktrees: await listRepoWorktrees(
-          repo,
-          getLocalProjectWorktreeGitOptionsForRuntime(repo, projectRuntime)
-        )
+      try {
+        return {
+          ok: true,
+          worktrees: await listRepoWorktrees(
+            repo,
+            getLocalProjectWorktreeGitOptionsForRuntime(repo, projectRuntime)
+          )
+        }
+      } catch (error) {
+        // Why: callers already treat a rejection as ok:false; returning it instead lets the caller
+        // classify and back off rather than respawning git against a dead cwd on every scan.
+        return {
+          ok: false,
+          worktrees: [],
+          failureKind: isMissingRepoPathScanError(error) ? 'missing_repo_path' : 'scan_failed'
+        }
       }
     }
     const provider = getSshGitProvider(repo.connectionId)
     if (!provider) {
+      // Why: no provider yet is an in-memory miss during reattach — cheap, so never back it off.
       return { ok: false, worktrees: this.listStoredSshWorktreesForResolution(repo) }
     }
     try {
       return { ok: true, worktrees: await provider.listWorktrees(repo.path) }
     } catch {
-      return { ok: false, worktrees: this.listStoredSshWorktreesForResolution(repo) }
+      return {
+        ok: false,
+        worktrees: this.listStoredSshWorktreesForResolution(repo),
+        failureKind: 'scan_failed'
+      }
     }
   }
 
@@ -24977,6 +25112,7 @@ export class OrcaRuntimeService {
     this.worktreeScanGenerations.set(repoId, (this.worktreeScanGenerations.get(repoId) ?? 0) + 1)
     this.worktreeScanCache.delete(repoId)
     this.worktreeScanInFlight.delete(repoId)
+    this.worktreeScanBackoff.delete(repoId)
   }
 
   private invalidateSshWorktreeScanCacheInternal(targetId: string): void {
@@ -24988,6 +25124,7 @@ export class OrcaRuntimeService {
       this.worktreeScanGenerations.set(repoId, (this.worktreeScanGenerations.get(repoId) ?? 0) + 1)
       this.worktreeScanCache.delete(repoId)
       this.worktreeScanInFlight.delete(repoId)
+      this.worktreeScanBackoff.delete(repoId)
     }
     if (affectedRepoIds.size > 0) {
       this.resolvedWorktreeGeneration += 1
@@ -30395,11 +30532,54 @@ const WORKTREE_SCAN_CACHE_TTL_MS = 30_000
 // these (crash-cluster diagnostics, 2026-07).
 const WORKTREE_SCAN_AGENT_SCRATCH_TTL_MS = 5 * 60_000
 const RESOLVED_WORKTREE_REPO_TIMEOUT_MS = 5000
+// Why: mirrors ipc/worktrees.ts's WORKTREE_LIST_ALL_CONCURRENCY. Every repo's TTL expires in the
+// same pass, so an uncapped fan-out spawned one git per repo at once (82 concurrent measured on a
+// 107-repo install, crash-cluster C2 2026-07) and saturated the machine.
+const WORKTREE_SCAN_CONCURRENCY = 8
+// Why: the flat 30s TTL made steady-state spawn rate linear in repo count (~2 execs/repo/min ⇒
+// ~214/min at 107 repos). Idle repos instead share a global budget; visible ones stay eager.
+const WORKTREE_SCAN_GLOBAL_BUDGET_PER_MIN = 60
+const WORKTREE_SCAN_IDLE_TTL_CAP_MS = 5 * 60_000
+// Why: a deleted repo directory never recovers on its own — retry rarely instead of ~2×/min forever.
+const WORKTREE_SCAN_MISSING_REPO_RETRY_MS = 5 * 60_000
+const WORKTREE_SCAN_FAILURE_BASE_RETRY_MS = WORKTREE_SCAN_CACHE_TTL_MS
+const WORKTREE_SCAN_FAILURE_RETRY_CAP_MS = 5 * 60_000
 
-export function resolveWorktreeScanCacheTtlMs(repo: Pick<Repo, 'path' | 'connectionId'>): number {
-  return !repo.connectionId && isAgentScratchRepoRootPath(repo.path)
-    ? WORKTREE_SCAN_AGENT_SCRATCH_TTL_MS
-    : WORKTREE_SCAN_CACHE_TTL_MS
+export function resolveWorktreeScanCacheTtlMs(
+  repo: Pick<Repo, 'path' | 'connectionId'> & { id?: string },
+  fleet?: WorktreeScanFleet
+): number {
+  if (!repo.connectionId && isAgentScratchRepoRootPath(repo.path)) {
+    return WORKTREE_SCAN_AGENT_SCRATCH_TTL_MS
+  }
+  if (!fleet || (repo.id !== undefined && fleet.activeRepoIds.has(repo.id))) {
+    return WORKTREE_SCAN_CACHE_TTL_MS
+  }
+  const budgetTtlMs = Math.ceil(
+    (fleet.scannedRepoCount / WORKTREE_SCAN_GLOBAL_BUDGET_PER_MIN) * 60_000
+  )
+  return Math.min(Math.max(WORKTREE_SCAN_CACHE_TTL_MS, budgetTtlMs), WORKTREE_SCAN_IDLE_TTL_CAP_MS)
+}
+
+/** Missing directories back off to the cap immediately; transient errors double from the base TTL. */
+export function resolveWorktreeScanRetryDelayMs(
+  kind: WorktreeScanFailureKind,
+  failures: number
+): number {
+  if (kind === 'missing_repo_path') {
+    return WORKTREE_SCAN_MISSING_REPO_RETRY_MS
+  }
+  const escalated = WORKTREE_SCAN_FAILURE_BASE_RETRY_MS * 2 ** Math.max(0, failures - 1)
+  return Math.min(escalated, WORKTREE_SCAN_FAILURE_RETRY_CAP_MS)
+}
+
+export function isMissingRepoPathScanError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  if (code === 'ENOENT' || code === 'ENOTDIR') {
+    return true
+  }
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /\b(ENOENT|ENOTDIR)\b/.test(message)
 }
 const PTY_CONTROLLER_LIST_TIMEOUT_MS = 3000
 // Why: the renderer waits 15s; leave room for the verified failure response and release the spawn fence before its caller times out.

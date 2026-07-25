@@ -64,7 +64,9 @@ import {
   OrcaRuntimeService,
   recentTerminalPathCandidatesIncludePath,
   recentTerminalOutputIncludesPath,
+  isMissingRepoPathScanError,
   resolveWorktreeScanCacheTtlMs,
+  resolveWorktreeScanRetryDelayMs,
   type RuntimeTerminalAgentStatusEvent
 } from './orca-runtime'
 import { RecentPtyOutputBuffer } from './recent-pty-output-buffer'
@@ -37916,6 +37918,206 @@ describe('resolveWorktreeScanCacheTtlMs', () => {
       await internals.listResolvedWorktrees()
       expect(scanCallsFor(scratchPath)).toBe(2)
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stretches the TTL for idle repos so the global spawn rate stops scaling with repo count', () => {
+    // Why: 107 repos on the flat 30s TTL measured ~214 git execs/min (crash-cluster C2).
+    const fleet = { scannedRepoCount: 107, activeRepoIds: new Set<string>() }
+    expect(
+      resolveWorktreeScanCacheTtlMs({ id: 'r', path: '/tmp/r', connectionId: '' }, fleet)
+    ).toBe(107_000)
+  })
+
+  it('keeps small fleets on the base TTL', () => {
+    const fleet = { scannedRepoCount: 12, activeRepoIds: new Set<string>() }
+    expect(
+      resolveWorktreeScanCacheTtlMs({ id: 'r', path: '/tmp/r', connectionId: '' }, fleet)
+    ).toBe(BASE_TTL_MS)
+  })
+
+  it('caps the idle TTL so a huge fleet still rescans', () => {
+    const fleet = { scannedRepoCount: 5_000, activeRepoIds: new Set<string>() }
+    expect(
+      resolveWorktreeScanCacheTtlMs({ id: 'r', path: '/tmp/r', connectionId: '' }, fleet)
+    ).toBe(5 * 60_000)
+  })
+
+  it('keeps repos with a live pane eager regardless of fleet size', () => {
+    const fleet = { scannedRepoCount: 400, activeRepoIds: new Set(['repo-active']) }
+    expect(
+      resolveWorktreeScanCacheTtlMs({ id: 'repo-active', path: '/tmp/a', connectionId: '' }, fleet)
+    ).toBe(BASE_TTL_MS)
+    expect(
+      resolveWorktreeScanCacheTtlMs({ id: 'repo-idle', path: '/tmp/b', connectionId: '' }, fleet)
+    ).toBe(5 * 60_000)
+  })
+})
+
+describe('resolveWorktreeScanRetryDelayMs', () => {
+  it('sends a missing repo directory straight to the long retry window', () => {
+    expect(resolveWorktreeScanRetryDelayMs('missing_repo_path', 1)).toBe(5 * 60_000)
+    expect(resolveWorktreeScanRetryDelayMs('missing_repo_path', 9)).toBe(5 * 60_000)
+  })
+
+  it('escalates transient scan failures and caps them', () => {
+    expect(resolveWorktreeScanRetryDelayMs('scan_failed', 1)).toBe(30_000)
+    expect(resolveWorktreeScanRetryDelayMs('scan_failed', 2)).toBe(60_000)
+    expect(resolveWorktreeScanRetryDelayMs('scan_failed', 3)).toBe(120_000)
+    expect(resolveWorktreeScanRetryDelayMs('scan_failed', 20)).toBe(5 * 60_000)
+  })
+})
+
+describe('isMissingRepoPathScanError', () => {
+  it('recognises spawn ENOENT from a dead repo cwd', () => {
+    expect(isMissingRepoPathScanError(new Error('spawn git ENOENT'))).toBe(true)
+    expect(isMissingRepoPathScanError(Object.assign(new Error('boom'), { code: 'ENOENT' }))).toBe(
+      true
+    )
+    expect(isMissingRepoPathScanError(new Error('fatal: not a git repository'))).toBe(false)
+  })
+})
+
+describe('worktree scan fan-out', () => {
+  const BASE_TTL_MS = 30_000
+  const MISSING_REPO_RETRY_MS = 5 * 60_000
+  const buildRepos = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `repo-${index}`,
+      path: `/tmp/repo-${index}`,
+      displayName: `repo-${index}`,
+      badgeColor: 'blue',
+      addedAt: 1
+    }))
+
+  it('caps concurrent git worktree scans instead of spawning one per repo at once', async () => {
+    vi.mocked(listWorktrees).mockClear()
+    let inFlight = 0
+    let peak = 0
+    const release: (() => void)[] = []
+    vi.mocked(listWorktrees).mockImplementation(async () => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise<void>((resolve) => release.push(resolve))
+      inFlight -= 1
+      return []
+    })
+    try {
+      const runtime = new OrcaRuntimeService({
+        ...store,
+        getRepos: () => buildRepos(40)
+      } as never)
+      const internals = runtime as unknown as { listResolvedWorktrees: () => Promise<unknown> }
+      const pending = internals.listResolvedWorktrees()
+      let settled = false
+      void pending.then(() => {
+        settled = true
+      })
+      // Drain in waves so every repo still gets scanned; peak in-flight is what's under test.
+      for (let guard = 0; guard < 500 && !settled; guard += 1) {
+        release.splice(0).forEach((resolve) => resolve())
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      await pending
+
+      expect(peak).toBeLessThanOrEqual(8)
+      expect(vi.mocked(listWorktrees).mock.calls.length).toBe(40)
+    } finally {
+      vi.mocked(listWorktrees).mockReset()
+      vi.mocked(listWorktrees).mockResolvedValue(MOCK_GIT_WORKTREES)
+    }
+  })
+
+  it('negative-caches a missing repo directory instead of respawning git every scan', async () => {
+    vi.useFakeTimers()
+    vi.mocked(listWorktrees).mockClear()
+    const missingPath = '/tmp/repo-missing'
+    vi.mocked(listWorktrees).mockImplementation(async (path: string) => {
+      if (path === missingPath) {
+        throw Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
+      }
+      return []
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const runtime = new OrcaRuntimeService({
+        ...store,
+        getRepos: () => [
+          {
+            id: 'repo-ok',
+            path: '/tmp/repo-ok',
+            displayName: 'ok',
+            badgeColor: 'blue',
+            addedAt: 1
+          },
+          {
+            id: 'repo-missing',
+            path: missingPath,
+            displayName: 'missing',
+            badgeColor: 'blue',
+            addedAt: 1
+          }
+        ]
+      } as never)
+      const internals = runtime as unknown as {
+        listResolvedWorktrees: () => Promise<unknown>
+        listReposMissingOnDisk: () => string[]
+      }
+      const scansFor = (path: string): number =>
+        vi.mocked(listWorktrees).mock.calls.filter((call) => call[0] === path).length
+
+      await internals.listResolvedWorktrees()
+      expect(scansFor(missingPath)).toBe(1)
+      expect(internals.listReposMissingOnDisk()).toEqual(['repo-missing'])
+
+      // The healthy repo rescans on its own TTL; the missing one stays suppressed.
+      vi.advanceTimersByTime(BASE_TTL_MS + 1_000)
+      await internals.listResolvedWorktrees()
+      expect(scansFor('/tmp/repo-ok')).toBe(2)
+      expect(scansFor(missingPath)).toBe(1)
+
+      vi.advanceTimersByTime(MISSING_REPO_RETRY_MS)
+      await internals.listResolvedWorktrees()
+      expect(scansFor(missingPath)).toBe(2)
+    } finally {
+      warn.mockRestore()
+      vi.mocked(listWorktrees).mockReset()
+      vi.mocked(listWorktrees).mockResolvedValue(MOCK_GIT_WORKTREES)
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the missing-repo backoff once the directory comes back', async () => {
+    vi.useFakeTimers()
+    vi.mocked(listWorktrees).mockClear()
+    vi.mocked(listWorktrees).mockRejectedValueOnce(
+      Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
+    )
+    vi.mocked(listWorktrees).mockResolvedValue([])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const runtime = new OrcaRuntimeService({
+        ...store,
+        getRepos: () => [
+          { id: 'repo-1', path: '/tmp/repo-1', displayName: 'r', badgeColor: 'blue', addedAt: 1 }
+        ]
+      } as never)
+      const internals = runtime as unknown as {
+        listResolvedWorktrees: () => Promise<unknown>
+        listReposMissingOnDisk: () => string[]
+      }
+
+      await internals.listResolvedWorktrees()
+      expect(internals.listReposMissingOnDisk()).toEqual(['repo-1'])
+
+      vi.advanceTimersByTime(MISSING_REPO_RETRY_MS + 1_000)
+      await internals.listResolvedWorktrees()
+      expect(internals.listReposMissingOnDisk()).toEqual([])
+    } finally {
+      warn.mockRestore()
+      vi.mocked(listWorktrees).mockReset()
+      vi.mocked(listWorktrees).mockResolvedValue(MOCK_GIT_WORKTREES)
       vi.useRealTimers()
     }
   })
