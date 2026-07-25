@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-web-preferences'
 
 const OFFSCREEN_BACKEND_SOURCE = resolve(__dirname, 'offscreen-browser-backend.ts')
 
@@ -23,5 +24,9 @@ describe('OffscreenBrowserBackend web preferences', () => {
       "import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-web-preferences'"
     )
     expect(webPreferencesBlock).toContain('...ORCA_BROWSER_GUEST_WEB_PREFERENCES')
+    expect(ORCA_BROWSER_GUEST_WEB_PREFERENCES).toMatchObject({
+      disableBlinkFeatures: 'PreciseMemoryInfo',
+      disableHtmlFullscreenWindowResize: true
+    })
   })
 })

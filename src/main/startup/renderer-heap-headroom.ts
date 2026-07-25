@@ -84,11 +84,7 @@ export function computeRendererHeapCeilingMb(
  * Why: without this switch Chromium serves performance.memory as ±~3% geometric
  * buckets cached for 20 minutes, so heap climb shape is unmeasurable and
  * highwater thresholds fire up to 20 min late.
- *
- * Caveat: this is a process-global switch, so browser-pane webview guests
- * loading arbitrary URLs also lose Chromium's heap side-channel mitigation.
- * Gate it (or source precise numbers from process.getHeapStatistics() instead)
- * before shipping beyond a diagnostic cycle.
+ * Untrusted browser contents opt out through the shared guest policy.
  */
 export function enablePreciseRendererMemoryInfo(): void {
   app.commandLine.appendSwitch('enable-precise-memory-info')

@@ -246,6 +246,7 @@ describe('createMainWindow', () => {
     )
     expect(allowBlankEvent.preventDefault).not.toHaveBeenCalled()
     expect(allowBlankPrefs).toMatchObject({
+      disableBlinkFeatures: 'PreciseMemoryInfo',
       disableHtmlFullscreenWindowResize: true,
       partition: 'persist:orca-browser',
       sandbox: true

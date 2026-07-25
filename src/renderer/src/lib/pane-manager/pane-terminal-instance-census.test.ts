@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { collectRendererMemoryProfileCounts } from '../renderer-memory-profile'
 import {
   _resetPaneTerminalInstanceCensusForTests,
-  recordPaneTerminalCreated,
-  recordPaneTerminalDisposed
+  getPaneTerminalLifecycleCounts,
+  recordPaneTerminalRegistered,
+  recordPaneTerminalRemoved
 } from './pane-terminal-instance-census'
 
 describe('pane terminal instance census', () => {
@@ -11,18 +11,17 @@ describe('pane terminal instance census', () => {
     _resetPaneTerminalInstanceCensusForTests()
   })
 
-  it('reports created/disposed/live counts through the memory profile registry', () => {
-    recordPaneTerminalCreated()
-    recordPaneTerminalCreated()
-    recordPaneTerminalCreated()
-    recordPaneTerminalDisposed()
+  it('reports successful registrations, removals, and terminal disposal failures', () => {
+    recordPaneTerminalRegistered()
+    recordPaneTerminalRegistered()
+    recordPaneTerminalRegistered()
+    recordPaneTerminalRemoved(false)
+    recordPaneTerminalRemoved(true)
 
-    expect(collectRendererMemoryProfileCounts()).toEqual(
-      expect.objectContaining({
-        'paneTerminals.created': 3,
-        'paneTerminals.disposed': 1,
-        'paneTerminals.live': 2
-      })
-    )
+    expect(getPaneTerminalLifecycleCounts()).toEqual({
+      registered: 3,
+      removed: 2,
+      disposeErrors: 1
+    })
   })
 })

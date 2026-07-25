@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { collectRendererMemoryProfileCounts } from '../renderer-memory-profile'
 import {
   forEachLivePaneForDesyncSentinel,
   refitAndRefreshAllTerminalPanes,
@@ -7,6 +8,11 @@ import {
   resetAllTerminalWebglAtlases,
   unregisterLivePaneManager
 } from './pane-manager-registry'
+import {
+  _resetPaneTerminalInstanceCensusForTests,
+  recordPaneTerminalRegistered,
+  recordPaneTerminalRemoved
+} from './pane-terminal-instance-census'
 
 describe('pane manager registry', () => {
   // Why: the registry is module-global; unregister in afterEach so a failed
@@ -24,6 +30,53 @@ describe('pane manager registry', () => {
     for (const manager of registeredManagers.splice(0)) {
       unregisterLivePaneManager(manager)
     }
+    _resetPaneTerminalInstanceCensusForTests()
+  })
+
+  it('profiles actual manager membership and terminal buffer weight', () => {
+    const manager = {
+      resetWebglTextureAtlases: vi.fn<() => void>(),
+      getPanes: () => [
+        {
+          id: 1,
+          container: { isConnected: true },
+          terminal: {
+            cols: 80,
+            rows: 24,
+            buffer: { normal: { length: 124 }, alternate: { length: 24 } }
+          }
+        },
+        {
+          id: 2,
+          container: { isConnected: false },
+          terminal: {
+            cols: 100,
+            rows: 20,
+            buffer: { normal: { length: 50 }, alternate: { length: 20 } }
+          }
+        }
+      ]
+    }
+    registerLivePaneManager(manager)
+    registeredManagers.push(manager)
+    recordPaneTerminalRegistered()
+    recordPaneTerminalRegistered()
+    recordPaneTerminalRegistered()
+    recordPaneTerminalRemoved(true)
+
+    expect(collectRendererMemoryProfileCounts()).toEqual(
+      expect.objectContaining({
+        'paneTerminals.registered': 3,
+        'paneTerminals.removed': 1,
+        'paneTerminals.disposeErrors': 1,
+        'paneTerminals.tracked': 2,
+        'paneTerminals.domConnected': 1,
+        'paneTerminals.domDisconnected': 1,
+        'paneTerminals.bufferRows': 218,
+        'paneTerminals.scrollbackRows': 130,
+        'paneTerminals.estimatedBufferCells': 18_840
+      })
+    )
   })
 
   it('resets atlases on every registered manager', () => {

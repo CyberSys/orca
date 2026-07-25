@@ -199,6 +199,8 @@ describe('browserManager', () => {
       webPreferences: {
         allowRunningInsecureContent: false,
         contextIsolation: true,
+        disableBlinkFeatures: 'PreciseMemoryInfo',
+        disableHtmlFullscreenWindowResize: true,
         nodeIntegration: false,
         nodeIntegrationInSubFrames: false,
         sandbox: true,

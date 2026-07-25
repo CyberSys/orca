@@ -1,6 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ORCA_BROWSER_GUEST_WEB_PREFERENCES_ATTRIBUTE } from '../../../../shared/browser-guest-web-preferences'
+import {
+  ORCA_BROWSER_GUEST_WEB_PREFERENCES,
+  ORCA_BROWSER_GUEST_WEB_PREFERENCES_ATTRIBUTE
+} from '../../../../shared/browser-guest-web-preferences'
 
 const registryMocks = vi.hoisted(() => ({
   destroyPersistentWebview: vi.fn(),
@@ -54,6 +57,9 @@ describe('BrowserPane webview preferences', () => {
     )
     expect(ensuredWebview?.webview.getAttribute('webpreferences')).toBe(
       ORCA_BROWSER_GUEST_WEB_PREFERENCES_ATTRIBUTE
+    )
+    expect(ORCA_BROWSER_GUEST_WEB_PREFERENCES_ATTRIBUTE).toContain(
+      `disableBlinkFeatures=${ORCA_BROWSER_GUEST_WEB_PREFERENCES.disableBlinkFeatures}`
     )
     expect(registryMocks.registerPersistentWebview).toHaveBeenCalledWith(
       'browser-page-1',

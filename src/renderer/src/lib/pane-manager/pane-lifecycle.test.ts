@@ -6,9 +6,11 @@ import {
   markComplexScriptOutput,
   resetTerminalWebglSuggestion
 } from './pane-webgl-renderer'
-import { collectRendererMemoryProfileCounts } from '../renderer-memory-profile'
 import { attachLigatures, disposePane, openTerminal } from './pane-lifecycle'
-import { _resetPaneTerminalInstanceCensusForTests } from './pane-terminal-instance-census'
+import {
+  _resetPaneTerminalInstanceCensusForTests,
+  getPaneTerminalLifecycleCounts
+} from './pane-terminal-instance-census'
 import { ensureArabicShapingJoinerForText } from './terminal-arabic-shaping-joiner'
 import {
   buildDefaultTerminalOptions,
@@ -645,18 +647,35 @@ describe('openTerminal — addon and provider wiring', () => {
     expect(handler('مرحبا')).toEqual([])
   })
 
-  // Why: the census only survives refactors if the disposal call site is
-  // pinned, including its membership gate against double-counting.
-  it('counts a disposed pane terminal exactly once', () => {
+  it('counts a pane-manager removal exactly once', () => {
     _resetPaneTerminalInstanceCensusForTests()
     const { pane } = createOpenTerminalHarness()
+    pane.terminal.dispose = vi.fn()
     const panes = new Map([[pane.id, pane]])
 
     disposePane(pane, panes)
     disposePane(pane, panes)
 
-    expect(collectRendererMemoryProfileCounts()).toEqual(
-      expect.objectContaining({ 'paneTerminals.disposed': 1 })
-    )
+    expect(getPaneTerminalLifecycleCounts()).toEqual({
+      registered: 0,
+      removed: 1,
+      disposeErrors: 0
+    })
+  })
+
+  it('reports a terminal disposal failure separately from pane removal', () => {
+    _resetPaneTerminalInstanceCensusForTests()
+    const { pane } = createOpenTerminalHarness()
+    pane.terminal.dispose = vi.fn(() => {
+      throw new Error('dispose failed')
+    })
+
+    disposePane(pane, new Map([[pane.id, pane]]))
+
+    expect(getPaneTerminalLifecycleCounts()).toEqual({
+      registered: 0,
+      removed: 1,
+      disposeErrors: 1
+    })
   })
 })

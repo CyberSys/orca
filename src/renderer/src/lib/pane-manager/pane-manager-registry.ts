@@ -1,17 +1,84 @@
 import { recordTerminalWebglDiagnostic } from '../../../../shared/terminal-webgl-diagnostics'
+import { registerRendererMemoryProfileContributor } from '../renderer-memory-profile'
 import type { PaneRenderingDiagnostics } from './pane-manager-types'
+import { getPaneTerminalLifecycleCounts } from './pane-terminal-instance-census'
 
 type RegisteredPaneManager = {
   resetWebglTextureAtlases(): void
   fitAllPanes?: () => void
   refreshAllPanes?: () => void
   getRenderingDiagnostics?: () => PaneRenderingDiagnostics[]
-  getPanes?: () => { id: number; terminal: unknown }[]
+  getPanes?: () => { id: number; terminal: unknown; container?: unknown }[]
 }
 
 const liveManagers = new Set<RegisteredPaneManager>()
 const managerIds = new WeakMap<RegisteredPaneManager, number>()
 let nextManagerId = 1
+
+function finiteNonnegative(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function paneTerminalBufferProfile(pane: { terminal: unknown; container?: unknown }): {
+  bufferRows: number
+  estimatedBufferCells: number
+  scrollbackRows: number
+  domConnected: number
+} {
+  const terminal = pane.terminal as {
+    buffer?: {
+      normal?: { length?: unknown }
+      alternate?: { length?: unknown }
+    }
+    cols?: unknown
+    rows?: unknown
+  }
+  const normalRows = finiteNonnegative(terminal.buffer?.normal?.length)
+  const alternateRows = finiteNonnegative(terminal.buffer?.alternate?.length)
+  const cols = finiteNonnegative(terminal.cols)
+  const viewportRows = finiteNonnegative(terminal.rows)
+  const bufferRows = normalRows + alternateRows
+  const container = pane.container as { isConnected?: unknown } | undefined
+
+  return {
+    bufferRows,
+    estimatedBufferCells: bufferRows * cols,
+    scrollbackRows: Math.max(0, normalRows - viewportRows),
+    domConnected: container?.isConnected === true ? 1 : 0
+  }
+}
+
+function collectPaneTerminalProfile(): Record<string, number> {
+  const counts = {
+    ...getPaneTerminalLifecycleCounts(),
+    tracked: 0,
+    domConnected: 0,
+    domDisconnected: 0,
+    bufferRows: 0,
+    scrollbackRows: 0,
+    estimatedBufferCells: 0
+  }
+  for (const manager of liveManagers) {
+    let panes: { id: number; terminal: unknown; container?: unknown }[]
+    try {
+      panes = manager.getPanes?.() ?? []
+    } catch {
+      continue
+    }
+    for (const pane of panes) {
+      const profile = paneTerminalBufferProfile(pane)
+      counts.tracked += 1
+      counts.domConnected += profile.domConnected
+      counts.domDisconnected += 1 - profile.domConnected
+      counts.bufferRows += profile.bufferRows
+      counts.scrollbackRows += profile.scrollbackRows
+      counts.estimatedBufferCells += profile.estimatedBufferCells
+    }
+  }
+  return counts
+}
+
+registerRendererMemoryProfileContributor('paneTerminals', collectPaneTerminalProfile)
 
 export function registerLivePaneManager(manager: RegisteredPaneManager): void {
   if (!managerIds.has(manager)) {

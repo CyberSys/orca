@@ -51,6 +51,7 @@ import {
 } from './pane-split-close'
 import { FIRST_PANE_ID } from '../../../../shared/pane-key'
 import { splitPaneAroundMountedSubtree } from './pane-subtree-split'
+import { recordPaneTerminalRegistered } from './pane-terminal-instance-census'
 
 export type {
   PaneManagerOptions,
@@ -403,6 +404,7 @@ export class PaneManager {
     pane.webglAttachmentDeferred = this.renderingSuspended
     this.panes.set(id, pane)
     this.identities.register(id, leafId)
+    recordPaneTerminalRegistered()
     return pane
   }
 

@@ -9,7 +9,6 @@ import type { TerminalLeafId } from '../../../../shared/stable-pane-id'
 import type { DragReorderCallbacks, DragReorderState } from './pane-drag-reorder'
 import { attachPaneDrag } from './pane-drag-pointer'
 import type { ManagedPaneInternal, PaneManagerOptions } from './pane-manager-types'
-import { recordPaneTerminalCreated } from './pane-terminal-instance-census'
 import { buildDefaultTerminalOptions } from './pane-terminal-options'
 import { shouldFocusTerminalFromPanePointerDown } from './pane-pointer-focus'
 import { ENABLE_WEBGL_RENDERER } from './pane-webgl-renderer'
@@ -52,7 +51,6 @@ export function createPaneDOM(
   }
 
   const terminal = new Terminal(terminalOpts)
-  recordPaneTerminalCreated()
   // Why: a synchronous throw inside any link provider's provideLinks (notably
   // xterm web-links' LinkComputer raising RangeError on a pathological wrapped
   // line) escapes to window.onerror and gets the renderer killed. Guard every

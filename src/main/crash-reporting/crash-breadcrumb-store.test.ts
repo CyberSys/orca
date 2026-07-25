@@ -71,11 +71,9 @@ describe('crash breadcrumb store', () => {
     ])
   })
 
-  // Why: the cap is sized against the real ladder; a popout crossing any level
-  // must not evict the main surface's low-threshold baseline.
   it('retains every threshold for both renderer surfaces', () => {
-    for (const surface of ['main', 'dashboard-popout']) {
-      for (const thresholdPct of [40, 60, 75, 85]) {
+    for (const thresholdPct of [40, 60, 75, 85]) {
+      for (const surface of ['main', 'dashboard-popout']) {
         recordCrashBreadcrumb('renderer_memory_highwater', {
           rendererSurface: surface,
           thresholdPct
@@ -91,6 +89,11 @@ describe('crash breadcrumb store', () => {
     expect(
       retained
         .filter((breadcrumb) => breadcrumb.data?.rendererSurface === 'main')
+        .map((breadcrumb) => breadcrumb.data?.thresholdPct)
+    ).toEqual([40, 60, 75, 85])
+    expect(
+      retained
+        .filter((breadcrumb) => breadcrumb.data?.rendererSurface === 'dashboard-popout')
         .map((breadcrumb) => breadcrumb.data?.thresholdPct)
     ).toEqual([40, 60, 75, 85])
   })

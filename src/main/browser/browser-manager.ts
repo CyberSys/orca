@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { shell, webContents } from 'electron'
+import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-web-preferences'
 import { ORCA_BROWSER_BLANK_URL } from '../../shared/constants'
 import {
   normalizeBrowserNavigationUrl,
@@ -168,8 +169,9 @@ const SAFE_POPUP_WINDOW_OPTIONS = {
   skipTaskbar: false,
   titleBarStyle: 'default',
   transparent: false,
-  // Why: Electron applies these before createWindow; feature strings/opener inheritance must not relax the child's isolation.
+  // Why: Electron applies these before createWindow, including adopted popup contents.
   webPreferences: {
+    ...ORCA_BROWSER_GUEST_WEB_PREFERENCES,
     allowRunningInsecureContent: false,
     contextIsolation: true,
     nodeIntegration: false,

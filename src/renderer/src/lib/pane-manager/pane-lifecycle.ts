@@ -15,7 +15,7 @@ import { attachWebgl, cancelPendingWebglRefresh, disposeWebgl } from './pane-web
 import { configureLazyArabicShapingJoiner } from './terminal-arabic-shaping-joiner'
 import { TerminalLigaturesAddon } from './terminal-ligatures-addon'
 import { resolveCursorAgentImeAnchor } from './terminal-ime-anchor'
-import { recordPaneTerminalDisposed } from './pane-terminal-instance-census'
+import { recordPaneTerminalRemoved } from './pane-terminal-instance-census'
 
 // ---------------------------------------------------------------------------
 // Pane creation, terminal open/close, addon management
@@ -292,14 +292,14 @@ export function disposePane(
   } catch {
     /* ignore */
   }
+  let terminalDisposeFailed = false
   try {
     pane.terminal.dispose()
   } catch {
-    /* ignore */
+    terminalDisposeFailed = true
   }
-  // Why: count only the first disposal of a tracked pane; a repeated call
-  // must not skew the created/disposed census the crash profile reports.
+  // Why: membership, not disposal success, defines whether the manager still tracks this pane.
   if (panes.delete(pane.id)) {
-    recordPaneTerminalDisposed()
+    recordPaneTerminalRemoved(terminalDisposeFailed)
   }
 }
