@@ -5,8 +5,11 @@ import {
 } from '../../shared/crash-reporting'
 
 const MAX_BREADCRUMBS = 30
-// Why: retain two thresholds for each renderer surface without growing the ring.
-const MAX_RETAINED_BREADCRUMBS = 4
+// Why: RENDERER_MEMORY_HIGHWATER_RATIOS.length x the two RendererSurface members
+// ('main', 'dashboard-popout') — undersizing this evicts the low-threshold
+// baseline the ladder exists to produce, and retained entries never fall back
+// into the ring below, so an eviction is total loss.
+const MAX_RETAINED_BREADCRUMBS = 8
 // Why: coalesceKey embeds an open-string agentType (length-trimmed only, never
 // enum-checked), so the key space is unbounded over a long multi-agent/SSH session.
 // Bound the coalesce map the same way ProcessGoneDedupe bounds its key map.

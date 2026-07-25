@@ -50,7 +50,7 @@ describe('crash breadcrumb store', () => {
   })
 
   it('caps retained high-water profiles', () => {
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 9; index += 1) {
       recordCrashBreadcrumb('renderer_memory_highwater', {
         rendererSurface: `surface-${index}`,
         thresholdPct: 80
@@ -59,7 +59,40 @@ describe('crash breadcrumb store', () => {
 
     expect(
       getCrashBreadcrumbSnapshot().map((breadcrumb) => breadcrumb.data?.rendererSurface)
-    ).toEqual(['surface-1', 'surface-2', 'surface-3', 'surface-4'])
+    ).toEqual([
+      'surface-1',
+      'surface-2',
+      'surface-3',
+      'surface-4',
+      'surface-5',
+      'surface-6',
+      'surface-7',
+      'surface-8'
+    ])
+  })
+
+  // Why: the cap is sized against the real ladder; a popout crossing any level
+  // must not evict the main surface's low-threshold baseline.
+  it('retains every threshold for both renderer surfaces', () => {
+    for (const surface of ['main', 'dashboard-popout']) {
+      for (const thresholdPct of [40, 60, 75, 85]) {
+        recordCrashBreadcrumb('renderer_memory_highwater', {
+          rendererSurface: surface,
+          thresholdPct
+        })
+      }
+    }
+
+    const retained = getCrashBreadcrumbSnapshot().filter(
+      (breadcrumb) => breadcrumb.name === 'renderer_memory_highwater'
+    )
+
+    expect(retained).toHaveLength(8)
+    expect(
+      retained
+        .filter((breadcrumb) => breadcrumb.data?.rendererSurface === 'main')
+        .map((breadcrumb) => breadcrumb.data?.thresholdPct)
+    ).toEqual([40, 60, 75, 85])
   })
 
   it('redacts sensitive breadcrumb fields before they can be snapshotted', () => {

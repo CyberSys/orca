@@ -1,13 +1,9 @@
 import { registerRendererMemoryProfileContributor } from '../renderer-memory-profile'
 
-/**
- * Created/disposed counts for pane xterm Terminal instances.
- *
- * Why: renderer_memory_highwater's `.xterm` element count only sees mounted
- * terminals. A disposed-but-retained (or never-disposed) Terminal pins its
- * buffer object graph in the V8 heap invisibly; live-minus-mounted in a crash
- * profile is the direct test for the detached-terminal leak hypothesis (C1).
- */
+// Why: `.xterm` element counts can't separate terminal churn from retention;
+// counts climbing with worktree activations is the H1 signal. Caveat:
+// disposePane increments disposed AND unmounts, so live-minus-mounted sees a
+// created-but-never-disposed Terminal, never a disposed-but-retained one.
 let createdPaneTerminals = 0
 let disposedPaneTerminals = 0
 

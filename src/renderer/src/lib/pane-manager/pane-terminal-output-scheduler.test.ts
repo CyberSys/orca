@@ -1678,3 +1678,48 @@ describe('pane terminal output scheduler', () => {
     expect(throwing.write).toHaveBeenCalledTimes(1)
   })
 })
+
+// Why: this contributor is the only production-visible view of the output
+// backlog; a silent key rename would drop it from every crash profile.
+describe('terminalOutputQueue memory profile contributor', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('reports the queued backlog under the documented keys', async () => {
+    vi.useFakeTimers()
+    const { writeTerminalOutput } = await loadScheduler()
+    const { collectRendererMemoryProfileCounts } = await import('@/lib/renderer-memory-profile')
+    const terminal = createTerminal()
+    terminal.write.mockImplementation(() => {})
+
+    writeTerminalOutput(terminal, 'q'.repeat(40 * 1024), {
+      foreground: false,
+      latencySensitive: false
+    })
+
+    expect(collectRendererMemoryProfileCounts()).toEqual(
+      expect.objectContaining({
+        'terminalOutputQueue.terminals': 1,
+        'terminalOutputQueue.queuedChars': 40 * 1024,
+        'terminalOutputQueue.maxQueuedCharsPerTerminal': 40 * 1024
+      })
+    )
+
+    // Why: the gauge is instantaneous, so a drained backlog reads as zero —
+    // the sampling caveat any field reading of these counts depends on.
+    vi.advanceTimersByTime(1000)
+
+    expect(collectRendererMemoryProfileCounts()).toEqual(
+      expect.objectContaining({
+        'terminalOutputQueue.terminals': 0,
+        'terminalOutputQueue.queuedChars': 0
+      })
+    )
+  })
+})

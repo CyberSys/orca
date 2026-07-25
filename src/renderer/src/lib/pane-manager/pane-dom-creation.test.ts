@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TerminalLeafId } from '../../../../shared/stable-pane-id'
+import { collectRendererMemoryProfileCounts } from '../renderer-memory-profile'
 import { createPaneDOM } from './pane-dom-creation'
+import { _resetPaneTerminalInstanceCensusForTests } from './pane-terminal-instance-census'
 
 const webLinksAddonMock = vi.hoisted(() => ({
   options: null as { hover?: (event: MouseEvent, uri: string) => void; leave?: () => void } | null
@@ -130,5 +132,25 @@ describe('createPaneDOM link tooltips', () => {
     await Promise.resolve()
 
     expect(pane.linkTooltip.textContent).toBe(labeledText)
+  })
+})
+
+// Why: the census is only worth shipping if the wire is connected; asserting
+// the counters directly would still pass if this call site were dropped.
+describe('createPaneDOM census wiring', () => {
+  it('counts every created pane terminal', () => {
+    _resetPaneTerminalInstanceCensusForTests()
+    const leafId = '11111111-1111-4111-8111-111111111111' as TerminalLeafId
+
+    createPaneDOM(1, leafId, {}, { active: null } as never, {} as never, vi.fn(), vi.fn())
+    createPaneDOM(2, leafId, {}, { active: null } as never, {} as never, vi.fn(), vi.fn())
+
+    expect(collectRendererMemoryProfileCounts()).toEqual(
+      expect.objectContaining({
+        'paneTerminals.created': 2,
+        'paneTerminals.disposed': 0,
+        'paneTerminals.live': 2
+      })
+    )
   })
 })

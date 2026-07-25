@@ -6,7 +6,9 @@ import {
   markComplexScriptOutput,
   resetTerminalWebglSuggestion
 } from './pane-webgl-renderer'
+import { collectRendererMemoryProfileCounts } from '../renderer-memory-profile'
 import { attachLigatures, disposePane, openTerminal } from './pane-lifecycle'
+import { _resetPaneTerminalInstanceCensusForTests } from './pane-terminal-instance-census'
 import { ensureArabicShapingJoinerForText } from './terminal-arabic-shaping-joiner'
 import {
   buildDefaultTerminalOptions,
@@ -641,5 +643,20 @@ describe('openTerminal — addon and provider wiring', () => {
 
     pane.webglAddon = null
     expect(handler('مرحبا')).toEqual([])
+  })
+
+  // Why: the census only survives refactors if the disposal call site is
+  // pinned, including its membership gate against double-counting.
+  it('counts a disposed pane terminal exactly once', () => {
+    _resetPaneTerminalInstanceCensusForTests()
+    const { pane } = createOpenTerminalHarness()
+    const panes = new Map([[pane.id, pane]])
+
+    disposePane(pane, panes)
+    disposePane(pane, panes)
+
+    expect(collectRendererMemoryProfileCounts()).toEqual(
+      expect.objectContaining({ 'paneTerminals.disposed': 1 })
+    )
   })
 })

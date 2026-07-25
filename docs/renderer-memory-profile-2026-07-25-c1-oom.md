@@ -4,7 +4,7 @@ Status: COMPLETE — measurement model corrected, root-cause candidate identifie
 (H1, high confidence on mechanism), instrumentation to confirm it in one field
 cycle implemented in this branch (§6).
 
-Corpus: `/Users/jinjingliang/Documents/projects/orca/fix-crashes-07-25/.crash-triage/` (57 bundles, 2026-07-24 → 07-25).
+Corpus: the `fix-crashes-07-25` worktree's `.crash-triage/` bundle set (57 bundles, 2026-07-24 → 07-25).
 All bundle re-derivations below were recomputed from the raw `.ndjson` files, not from digests.
 
 ---
@@ -421,7 +421,10 @@ Ordered by information-per-line-of-code:
   — created/disposed/live pane-terminal counts as a `paneTerminals`
   contributor; wired in `pane-dom-creation.ts` (create) and
   `pane-lifecycle.ts` `disposePane` (dispose, membership-gated against
-  double-count). Live-minus-mounted is the direct H2 test.
+  double-count). `paneTerminals.live` and `terminalElements` climbing together
+  with worktree activations is the direct H1 test; `live` >> `terminalElements`
+  would instead indicate detached-terminal retention. H2 stays uninstrumented
+  (see its falsify note).
 - `src/renderer/src/lib/pane-manager/pane-terminal-output-scheduler.ts` —
   `terminalOutputQueue` contributor (queued terminals/chars/max-per-terminal)
   reusing the existing snapshot helper; production-visible unlike the

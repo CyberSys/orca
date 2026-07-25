@@ -81,12 +81,14 @@ export function computeRendererHeapCeilingMb(
 }
 
 /**
- * Why: without this switch Chromium serves performance.memory as ±~3%
- * geometric buckets cached for 20 minutes (anti-fingerprinting), so every
- * field renderer_memory sample in the 2026-07 OOM corpus was up to 20 min
- * stale and heap-highwater thresholds fired late. A desktop app has no
- * fingerprinting surface to protect; precise values make climb shape and
- * threshold timing measurable.
+ * Why: without this switch Chromium serves performance.memory as ±~3% geometric
+ * buckets cached for 20 minutes, so heap climb shape is unmeasurable and
+ * highwater thresholds fire up to 20 min late.
+ *
+ * Caveat: this is a process-global switch, so browser-pane webview guests
+ * loading arbitrary URLs also lose Chromium's heap side-channel mitigation.
+ * Gate it (or source precise numbers from process.getHeapStatistics() instead)
+ * before shipping beyond a diagnostic cycle.
  */
 export function enablePreciseRendererMemoryInfo(): void {
   app.commandLine.appendSwitch('enable-precise-memory-info')
