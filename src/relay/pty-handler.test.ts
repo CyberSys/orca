@@ -526,7 +526,7 @@ describe('PtyHandler', () => {
     })
     const resolveDefaultShellSpy = vi
       .spyOn(ptyShellUtils, 'resolveDefaultShell')
-      .mockReturnValue('/default-shell')
+      .mockResolvedValue('/default-shell')
     try {
       await dispatcher.callRequest('pty.spawn', {
         cols: 80,
@@ -564,7 +564,7 @@ describe('PtyHandler', () => {
     })
     const resolveDefaultShellSpy = vi
       .spyOn(ptyShellUtils, 'resolveDefaultShell')
-      .mockReturnValue('/default-shell')
+      .mockResolvedValue('/default-shell')
     try {
       await dispatcher.callRequest('pty.spawn', {
         cols: 80,

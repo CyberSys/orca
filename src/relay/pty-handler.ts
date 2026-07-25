@@ -1010,7 +1010,7 @@ export class PtyHandler {
     const shellOverride =
       typeof params.shellOverride === 'string' ? params.shellOverride.trim() : ''
     const resolvedShellOverride = resolvePtyShellOverride(shellOverride)
-    const shell = resolvedShellOverride || resolveDefaultShell()
+    const shell = resolvedShellOverride || (await resolveDefaultShell())
     let id: string
     do {
       id = `pty-${this.nextId++}`
@@ -1510,7 +1510,7 @@ export class PtyHandler {
     }
     // Why: serialized state may come from an older/untrusted client; reapply fresh-spawn bounds.
     const envToDelete = sanitizeEnvToDelete(entry.envToDelete)
-    const shell = resolveDefaultShell()
+    const shell = await resolveDefaultShell()
     const spawnEnv = this.buildSpawnEnv(
       revivedEnv,
       { id: entry.id, paneKey: entry.paneKey, shell },

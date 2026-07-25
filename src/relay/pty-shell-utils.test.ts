@@ -93,9 +93,9 @@ describe('isProcessAlive', () => {
 })
 
 describe('resolveWindowsDefaultShell', () => {
-  it('uses an existing SHELL override when one is provided', () => {
+  it('uses an existing SHELL override when one is provided', async () => {
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SHELL: 'C:\\Tools\\pwsh.exe',
           SystemRoot: 'C:\\Windows',
@@ -109,11 +109,11 @@ describe('resolveWindowsDefaultShell', () => {
     ).toBe('C:\\Tools\\pwsh.exe')
   })
 
-  it('uses an existing OpenSSH DefaultShell path', () => {
+  it('uses an existing OpenSSH DefaultShell path', async () => {
     const powershell7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
 
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SystemRoot: 'C:\\Windows',
           ComSpec: 'C:\\Windows\\System32\\cmd.exe'
@@ -124,76 +124,43 @@ describe('resolveWindowsDefaultShell', () => {
     ).toBe(powershell7)
   })
 
-  it('reads and memoizes the OpenSSH DefaultShell registry value', async () => {
-    execFileSyncMock.mockReturnValue(
-      [
-        'HKEY_LOCAL_MACHINE\\SOFTWARE\\OpenSSH',
-        '    DefaultShell    REG_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe'
-      ].join('\n')
-    )
+  it('awaits an async DefaultShell probe and honors the resolved path', async () => {
+    const powershell7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
 
-    const { readOpenSshDefaultShell } = await import('./pty-shell-utils')
-
-    expect(readOpenSshDefaultShell()).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe')
-    expect(readOpenSshDefaultShell()).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe')
-    expect(execFileSyncMock).toHaveBeenCalledTimes(1)
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      'reg.exe',
-      ['query', 'HKLM\\SOFTWARE\\OpenSSH', '/v', 'DefaultShell'],
-      { encoding: 'utf8', timeout: 3000, windowsHide: true }
-    )
+    expect(
+      await resolveWindowsDefaultShell(
+        {
+          SystemRoot: 'C:\\Windows',
+          ComSpec: 'C:\\Windows\\System32\\cmd.exe'
+        },
+        (path) => path === powershell7,
+        async () => powershell7
+      )
+    ).toBe(powershell7)
   })
 
-  it('treats malformed OpenSSH DefaultShell output as empty and preserves the fallback chain', async () => {
-    execFileSyncMock.mockReturnValue(
-      [
-        'HKEY_LOCAL_MACHINE\\SOFTWARE\\OpenSSH',
-        '    DefaultShellCommandOption    REG_SZ    /c'
-      ].join('\n')
-    )
-
-    const { readOpenSshDefaultShell } = await import('./pty-shell-utils')
+  it('preserves the fallback chain when the async DefaultShell probe yields nothing', async () => {
+    // Why: covers both "no DefaultShell configured" and "the probe is in its
+    // post-failure cooldown" — readOpenSshDefaultShell reports '' for both.
     const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
-    expect(readOpenSshDefaultShell()).toBe('')
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SystemRoot: 'C:\\Windows',
           ComSpec: 'C:\\Windows\\System32\\cmd.exe'
         },
         (path) => path === powershell || path === 'C:\\Windows\\System32\\cmd.exe',
-        readOpenSshDefaultShell
+        async () => ''
       )
     ).toBe(powershell)
   })
 
-  it('treats reg.exe failures as empty and preserves the fallback chain', async () => {
-    execFileSyncMock.mockImplementation(() => {
-      throw new Error('reg.exe failed')
-    })
-
-    const { readOpenSshDefaultShell } = await import('./pty-shell-utils')
-    const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-
-    expect(readOpenSshDefaultShell()).toBe('')
-    expect(
-      resolveWindowsDefaultShell(
-        {
-          SystemRoot: 'C:\\Windows',
-          ComSpec: 'C:\\Windows\\System32\\cmd.exe'
-        },
-        (path) => path === powershell || path === 'C:\\Windows\\System32\\cmd.exe',
-        readOpenSshDefaultShell
-      )
-    ).toBe(powershell)
-  })
-
-  it('preserves the fallback chain for an invalid OpenSSH DefaultShell', () => {
+  it('preserves the fallback chain for an invalid OpenSSH DefaultShell', async () => {
     const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SystemRoot: 'C:\\Windows',
           ComSpec: 'C:\\Windows\\System32\\cmd.exe'
@@ -204,11 +171,11 @@ describe('resolveWindowsDefaultShell', () => {
     ).toBe(powershell)
   })
 
-  it('honors a deliberate OpenSSH PowerShell 5.1 DefaultShell value', () => {
+  it('honors a deliberate OpenSSH PowerShell 5.1 DefaultShell value', async () => {
     const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SystemRoot: 'C:\\Windows',
           ComSpec: 'C:\\Windows\\System32\\cmd.exe'
@@ -219,11 +186,11 @@ describe('resolveWindowsDefaultShell', () => {
     ).toBe(powershell)
   })
 
-  it('prefers inbox PowerShell before ComSpec for an interactive Windows PTY', () => {
+  it('prefers inbox PowerShell before ComSpec for an interactive Windows PTY', async () => {
     const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SystemRoot: 'C:\\Windows',
           ComSpec: 'C:\\Windows\\System32\\cmd.exe'
@@ -234,9 +201,9 @@ describe('resolveWindowsDefaultShell', () => {
     ).toBe(powershell)
   })
 
-  it('falls back to ComSpec when PowerShell cannot be found by path', () => {
+  it('falls back to ComSpec when PowerShell cannot be found by path', async () => {
     expect(
-      resolveWindowsDefaultShell(
+      await resolveWindowsDefaultShell(
         {
           SystemRoot: 'C:\\Windows',
           ComSpec: 'C:\\Windows\\System32\\cmd.exe'
