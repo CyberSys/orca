@@ -119,3 +119,16 @@ describe('enableRendererHeapHeadroom', () => {
     )
   })
 })
+
+describe('enablePreciseRendererMemoryInfo', () => {
+  it('appends the precise performance.memory switch (unbuckets the 20-min-cached field sampler)', async () => {
+    const { app } = await import('electron')
+    const { enablePreciseRendererMemoryInfo } = await import('./renderer-heap-headroom')
+
+    vi.mocked(app.commandLine.appendSwitch).mockClear()
+
+    enablePreciseRendererMemoryInfo()
+
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith('enable-precise-memory-info')
+  })
+})

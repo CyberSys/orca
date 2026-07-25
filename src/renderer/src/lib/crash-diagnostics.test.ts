@@ -192,7 +192,8 @@ describe('renderer crash diagnostics', () => {
       recordBreadcrumbMock.mock.calls.filter(
         (call) => (call[0] as { name: string }).name === 'renderer_memory_highwater'
       )
-    expect(highwaterCalls()).toHaveLength(1)
+    // Why 2: a 0.7 heap has already crossed the 0.4 and 0.6 levels.
+    expect(highwaterCalls()).toHaveLength(2)
     expect(recordBreadcrumbMock).toHaveBeenCalledWith({
       name: 'renderer_memory_highwater',
       data: expect.objectContaining({
@@ -209,21 +210,21 @@ describe('renderer crash diagnostics', () => {
     // Why: the interval sampler must not re-emit an already-crossed threshold.
     const tick = setIntervalMock.mock.calls[0][0] as () => void
     tick()
-    expect(highwaterCalls()).toHaveLength(1)
-
-    memory.usedJSHeapSize = 0.85 * memory.jsHeapSizeLimit
-    tick()
     expect(highwaterCalls()).toHaveLength(2)
+
+    memory.usedJSHeapSize = 0.86 * memory.jsHeapSizeLimit
+    tick()
+    expect(highwaterCalls()).toHaveLength(4)
     expect(recordBreadcrumbMock).toHaveBeenCalledWith({
       name: 'renderer_memory_highwater',
-      data: expect.objectContaining({ thresholdPct: 80 })
+      data: expect.objectContaining({ thresholdPct: 85 })
     })
 
-    // Why: a heap that jumps straight past 80% must emit both levels at once.
+    // Why: a heap that jumps straight past every level must emit them all at once.
     diagnostics._disposeRendererCrashDiagnosticsForTests()
     recordBreadcrumbMock.mockClear()
     diagnostics.installRendererCrashDiagnostics()
-    expect(highwaterCalls()).toHaveLength(2)
+    expect(highwaterCalls()).toHaveLength(4)
     expect(getElementsByTagName).toHaveBeenCalledTimes(3)
     expect(querySelectorAll).toHaveBeenCalledTimes(3)
 

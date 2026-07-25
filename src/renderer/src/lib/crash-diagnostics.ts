@@ -12,7 +12,9 @@ import { collectRendererMemoryProfileCounts } from './renderer-memory-profile'
 const RENDERER_MEMORY_SAMPLE_INTERVAL_MS = 60_000
 const BYTES_PER_MEGABYTE = 1024 * 1024
 // Why: one detailed breadcrumb per threshold names what grew before an OOM.
-const RENDERER_MEMORY_HIGHWATER_RATIOS = [0.6, 0.8] as const
+// Four levels give deltas between profiles; a 40 MB/min climb crosses 0.6→dead
+// in under an hour, so a two-level ladder produced no usable growth series.
+const RENDERER_MEMORY_HIGHWATER_RATIOS = [0.4, 0.6, 0.75, 0.85] as const
 
 type RendererSurface = 'main' | 'dashboard-popout'
 

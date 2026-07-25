@@ -7,6 +7,7 @@ import {
 } from './pane-terminal-foreground-render-settle'
 import { runGuardedWriteCompletionStep } from './xterm-write-callback-guard'
 import { recordRendererCrashBreadcrumb } from '@/lib/crash-breadcrumb-recorder'
+import { registerRendererMemoryProfileContributor } from '@/lib/renderer-memory-profile'
 import {
   discardInFlightTerminalOutputAckCredits,
   registerTerminalOutputAckCredits
@@ -239,6 +240,17 @@ function readQueueDebugSnapshot(): {
     queuedCharsByTerminal
   }
 }
+
+// Why: names the output backlog in renderer_memory_highwater crash profiles;
+// the e2e-gated debugState is invisible in production bundles.
+registerRendererMemoryProfileContributor('terminalOutputQueue', () => {
+  const snapshot = readQueueDebugSnapshot()
+  return {
+    terminals: snapshot.queuedTerminalCount,
+    queuedChars: snapshot.queuedChars,
+    maxQueuedCharsPerTerminal: snapshot.queuedCharsByTerminal
+  }
+})
 
 function recordQueueDebugPressure(): void {
   if (!debugEnabled) {

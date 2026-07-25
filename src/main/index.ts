@@ -88,7 +88,10 @@ import {
   installUncaughtPipeErrorGuard,
   installUnhandledRejectionLogging
 } from './startup/main-process-error-guards'
-import { enableRendererHeapHeadroom } from './startup/renderer-heap-headroom'
+import {
+  enablePreciseRendererMemoryInfo,
+  enableRendererHeapHeadroom
+} from './startup/renderer-heap-headroom'
 import { ensureVirtualDisplayForHeadlessServe } from './startup/ensure-virtual-display'
 import {
   readActiveGpuFallbackMarker,
@@ -662,6 +665,7 @@ if (hasSingleInstanceLock) {
   })
   configureElectronNetworkCompatibility()
   enableRendererHeapHeadroom()
+  enablePreciseRendererMemoryInfo()
   maybeApplyGpuFallbackForThisLaunch()
   if (!gpuFallbackActiveThisLaunch) {
     enableMainProcessGpuFeatures()

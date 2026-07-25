@@ -80,6 +80,18 @@ export function computeRendererHeapCeilingMb(
   return Math.min(RENDERER_HEAP_CAP_MB, Math.max(RENDERER_HEAP_FLOOR_MB, targetMb))
 }
 
+/**
+ * Why: without this switch Chromium serves performance.memory as ±~3%
+ * geometric buckets cached for 20 minutes (anti-fingerprinting), so every
+ * field renderer_memory sample in the 2026-07 OOM corpus was up to 20 min
+ * stale and heap-highwater thresholds fired late. A desktop app has no
+ * fingerprinting surface to protect; precise values make climb shape and
+ * threshold timing measurable.
+ */
+export function enablePreciseRendererMemoryInfo(): void {
+  app.commandLine.appendSwitch('enable-precise-memory-info')
+}
+
 export function enableRendererHeapHeadroom(
   options: { totalMemoryBytes?: number; env?: NodeJS.ProcessEnv } = {}
 ): void {
