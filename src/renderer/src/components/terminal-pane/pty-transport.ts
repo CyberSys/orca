@@ -42,6 +42,7 @@ import {
   type ProcessedAgentStatusChunk
 } from '../../../../shared/agent-status-osc'
 import { extractIpcErrorMessage } from '@/lib/ipc-error'
+import { registerPtySideEffectPendingGauge } from './pty-side-effect-pending-census'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
 
 // Re-export public API so existing consumers keep working.
@@ -145,6 +146,7 @@ export function createPtyOutputProcessor({
   flushPendingSideEffects: () => void
   resetBellDetector: () => void
   resetAgentStatusCarry: () => void
+  disposePendingSideEffectGauge: () => void
 } {
   const bellDetector = createBellDetector()
   // Why let: a model-restore marker drops bytes; recreating the parser stops a partial OSC-9999 carry from swallowing the next chunk's head.
@@ -157,6 +159,9 @@ export function createPtyOutputProcessor({
   let pendingSideEffects: PendingPtySideEffect[] = []
   let pendingSideEffectIndex = 0
   let pendingWorkingTitleSideEffects = 0
+  const disposePendingSideEffectGauge = registerPtySideEffectPendingGauge(
+    () => pendingSideEffects.length - pendingSideEffectIndex
+  )
   const agentTracker =
     onAgentBecameIdle || onAgentBecameWorking || onAgentExited
       ? createAgentStatusTracker(
@@ -466,7 +471,8 @@ export function createPtyOutputProcessor({
     resetBellDetector: () => bellDetector.reset(),
     resetAgentStatusCarry: () => {
       processAgentStatusChunk = createAgentStatusOscProcessor()
-    }
+    },
+    disposePendingSideEffectGauge
   }
 }
 
@@ -905,6 +911,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
 
     detach() {
       clearAccumulatedState()
+      // Why: detach abandons this transport (the pty is adopted by a successor's
+      // transport), so its side-effect gauge must stop counting toward the census.
+      outputProcessor.disposePendingSideEffectGauge()
       inputWriteQueue.clear()
       if (ptyId) {
         // Why: on remount keep the exit observer alive so a shell dying in the gap still clears stale tab/leaf bindings before reattach.
@@ -998,6 +1007,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     destroy() {
       destroyed = true
       this.disconnect()
+      outputProcessor.disposePendingSideEffectGauge()
     }
   }
 }

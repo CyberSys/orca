@@ -183,13 +183,12 @@ agent panes (the codeg-dev profile) fills faster than it drains — small
 objects plus title strings, steadily, forever. Survives reload, passive,
 scales per-machine.
 
-**Falsify/confirm:** add a `ptySideEffects.pending` contributor (gauge =
-`pendingSideEffects.length - pendingSideEffectIndex` summed across live
-output processors, registered on processor create, dropped on
-`clearAccumulatedState`/transport destroy) — deliberately NOT rushed into
-this slice because it needs those lifecycle hooks to avoid drift; spec'd here
-for the follow-up. Repro: background the window, run 10 agent panes emitting
-title changes, watch precise heap.
+**Falsify/confirm:** the `ptySideEffects.pending`/`processors` contributor
+(now implemented in §6: gauge = `pendingSideEffects.length -
+pendingSideEffectIndex` per live output processor, registered at processor
+create, disposed on transport `detach()`/`destroy()`) reports outstanding
+queue depth at every highwater crossing. Repro: background the window, run 10
+agent panes emitting title changes, watch precise heap.
 
 ### H3 — Remote-flow parse-backpressure hole, fixed by #10012 (NOT in 1.4.152/155)
 
@@ -423,12 +422,17 @@ Ordered by information-per-line-of-code:
   `pane-lifecycle.ts` `disposePane` (dispose, membership-gated against
   double-count). `paneTerminals.live` and `terminalElements` climbing together
   with worktree activations is the direct H1 test; `live` >> `terminalElements`
-  would instead indicate detached-terminal retention. H2 stays uninstrumented
-  (see its falsify note).
+  would instead indicate detached-terminal retention.
 - `src/renderer/src/lib/pane-manager/pane-terminal-output-scheduler.ts` —
   `terminalOutputQueue` contributor (queued terminals/chars/max-per-terminal)
   reusing the existing snapshot helper; production-visible unlike the
   e2e-gated debugState.
+- `src/renderer/src/components/terminal-pane/pty-side-effect-pending-census.ts`
+  (new) — `ptySideEffects.pending`/`processors` contributor; each
+  `createPtyOutputProcessor` registers a gauge over its outstanding
+  side-effect queue, disposed on transport `detach()`/`destroy()`. This is
+  the H2 discriminator the other contributors cannot see.
 - Tests: heap-headroom switch, 4-level highwater expectations, census unit
-  test. `pnpm run typecheck`, oxlint, `oxfmt --check`, and the pane-manager +
-  diagnostics suites (56 files / 594 tests) pass.
+  tests (pane terminals + a live-processor enqueue/drain/dispose round-trip
+  for the side-effect gauge). `pnpm run typecheck`, oxlint, `oxfmt --check`,
+  and the pane-manager + terminal-pane transport + diagnostics suites pass.
