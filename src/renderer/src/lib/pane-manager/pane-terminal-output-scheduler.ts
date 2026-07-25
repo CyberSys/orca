@@ -241,6 +241,29 @@ function readQueueDebugSnapshot(): {
   }
 }
 
+// Why: the profile is sampled at most once per threshold on a 60 s cadence, so
+// instantaneous gauges read 0 for a backlog that spiked and drained in between.
+// These high-water marks are the sampling-immune half of the H3 signal.
+let peakQueuedCharsPerTerminal = 0
+let peakQueuedTerminalCount = 0
+let droppedBacklogTotal = 0
+
+/** O(1) — safe on the enqueue hot path, unlike readQueueDebugSnapshot's scan. */
+function recordQueuePeaks(entry: QueueEntry): void {
+  if (entry.queuedChars > peakQueuedCharsPerTerminal) {
+    peakQueuedCharsPerTerminal = entry.queuedChars
+  }
+  if (queuedByTerminal.size > peakQueuedTerminalCount) {
+    peakQueuedTerminalCount = queuedByTerminal.size
+  }
+}
+
+export function _resetTerminalOutputQueuePeaksForTests(): void {
+  peakQueuedCharsPerTerminal = 0
+  peakQueuedTerminalCount = 0
+  droppedBacklogTotal = 0
+}
+
 // Why: names the output backlog in renderer_memory_highwater crash profiles;
 // the e2e-gated debugState is invisible in production bundles.
 registerRendererMemoryProfileContributor('terminalOutputQueue', () => {
@@ -248,7 +271,10 @@ registerRendererMemoryProfileContributor('terminalOutputQueue', () => {
   return {
     terminals: snapshot.queuedTerminalCount,
     queuedChars: snapshot.queuedChars,
-    maxQueuedCharsPerTerminal: snapshot.queuedCharsByTerminal
+    maxQueuedCharsPerTerminal: snapshot.queuedCharsByTerminal,
+    peakQueuedCharsPerTerminal,
+    peakTerminals: peakQueuedTerminalCount,
+    droppedBacklog: droppedBacklogTotal
   }
 })
 
@@ -704,6 +730,7 @@ function enqueueChunk(
     ackCredit: options?.ackCredit
   })
   entry.queuedChars += data.length
+  recordQueuePeaks(entry)
   recordQueueDebugPressure()
 }
 
@@ -769,8 +796,13 @@ function replaceBacklogWithWarning(
   entry.backgroundBacklogDropped = true
   entry.highPriority = true
   entry.foregroundHold = false
-  if (debugEnabled && shouldNotify) {
-    debugState.droppedBacklogCount++
+  if (shouldNotify) {
+    // Why ungated: a lossy-cap firing is the strongest sampling-immune backlog
+    // signal there is, and this branch is rare enough to cost nothing.
+    droppedBacklogTotal += 1
+    if (debugEnabled) {
+      debugState.droppedBacklogCount++
+    }
   }
   clearForegroundCoalesce(entry)
   recordQueueDebugPressure()

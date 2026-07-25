@@ -5,10 +5,7 @@ import {
 } from '../../shared/crash-reporting'
 
 const MAX_BREADCRUMBS = 30
-// Why: RENDERER_MEMORY_HIGHWATER_RATIOS.length x the two RendererSurface members
-// ('main', 'dashboard-popout') — undersizing this evicts the low-threshold
-// baseline the ladder exists to produce, and retained entries never fall back
-// into the ring below, so an eviction is total loss.
+// Why: retain all four thresholds for both renderer surfaces.
 const MAX_RETAINED_BREADCRUMBS = 8
 // Why: coalesceKey embeds an open-string agentType (length-trimmed only, never
 // enum-checked), so the key space is unbounded over a long multi-agent/SSH session.
@@ -97,6 +94,16 @@ export function recordCoalescedCrashBreadcrumb({
   const suppressedSinceLast = previous?.suppressed ?? 0
   recordCrashBreadcrumb(name, suppressedSinceLast > 0 ? { ...data, suppressedSinceLast } : data)
   return { suppressedSinceLast }
+}
+
+/**
+ * Why: retained profiles are keyed by surface+threshold with no generation, and
+ * a renderer reload resets the renderer-side one-shot guard while this store
+ * survives. Without dropping them at process-gone, the next renderer's crash
+ * inherits the dead one's heap profiles — reading as "OOM at a tiny heap".
+ */
+export function clearRetainedHighwaterBreadcrumbs(): void {
+  retainedBreadcrumbs.clear()
 }
 
 export function getCrashBreadcrumbSnapshot(): CrashReportBreadcrumb[] {

@@ -2,7 +2,10 @@ import os from 'node:os'
 import { app } from 'electron'
 import { isCrashReportReason, sanitizeCrashReportString } from '../../shared/crash-reporting'
 import type { CrashReportStore } from './crash-report-store'
-import { getCrashBreadcrumbSnapshot } from './crash-breadcrumb-store'
+import {
+  clearRetainedHighwaterBreadcrumbs,
+  getCrashBreadcrumbSnapshot
+} from './crash-breadcrumb-store'
 import { recordDurableCrashBreadcrumb } from './durable-crash-breadcrumb'
 import {
   shouldRecordProcessGoneCrash,
@@ -91,6 +94,11 @@ export function recordProcessGoneCrash(
     ...mainProcessLifecycle
   })
   const breadcrumbs = getCrashBreadcrumbSnapshot()
+  if (event.processType.toLowerCase() === 'renderer') {
+    // Why: the replacement renderer re-arms its own ladder from zero, so these
+    // profiles describe the process that just died and nothing after it.
+    clearRetainedHighwaterBreadcrumbs()
+  }
   const span = startSpan('electron.process_gone', {
     attributes: {
       'crash.source': event.source,

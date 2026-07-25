@@ -1711,15 +1711,37 @@ describe('terminalOutputQueue memory profile contributor', () => {
       })
     )
 
-    // Why: the gauge is instantaneous, so a drained backlog reads as zero —
-    // the sampling caveat any field reading of these counts depends on.
+    // Why: the instantaneous gauges drain to zero, but the peaks must survive —
+    // a crash profile sampled after the drain still has to show the spike.
     vi.advanceTimersByTime(1000)
 
     expect(collectRendererMemoryProfileCounts()).toEqual(
       expect.objectContaining({
         'terminalOutputQueue.terminals': 0,
-        'terminalOutputQueue.queuedChars': 0
+        'terminalOutputQueue.queuedChars': 0,
+        'terminalOutputQueue.peakQueuedCharsPerTerminal': 40 * 1024,
+        'terminalOutputQueue.peakTerminals': 1
       })
     )
+  })
+
+  it('counts a dropped backlog outside e2e builds', async () => {
+    vi.useFakeTimers()
+    const { writeTerminalOutput } = await loadScheduler()
+    const { collectRendererMemoryProfileCounts } = await import('@/lib/renderer-memory-profile')
+    const terminal = createTerminal()
+    terminal.write.mockImplementation(() => {})
+
+    // Why: overflow the background backlog cap so the lossy branch fires.
+    for (let index = 0; index < 40; index += 1) {
+      writeTerminalOutput(terminal, 'x'.repeat(1024 * 1024), {
+        foreground: false,
+        latencySensitive: false
+      })
+    }
+
+    expect(
+      collectRendererMemoryProfileCounts()['terminalOutputQueue.droppedBacklog']
+    ).toBeGreaterThan(0)
   })
 })
