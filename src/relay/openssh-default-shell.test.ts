@@ -32,6 +32,13 @@ function timeoutError(): Error {
   })
 }
 
+/** The rejection Node surfaces when reg.exe cannot be spawned at all. */
+function spawnFailureError(): Error {
+  // Why: spawn failures report killed/signal as `undefined` and a *string* code,
+  // unlike the numeric exit code of a probe that actually ran.
+  return Object.assign(new Error('spawn reg.exe ENOENT'), { code: 'ENOENT' })
+}
+
 /** Drive the promisified execFile callback with a per-attempt outcome. */
 function mockAttempts(outcomes: (string | Error)[]): { attempts: () => number } {
   let attempt = 0
@@ -106,6 +113,20 @@ describe('readOpenSshDefaultShell', () => {
     expect(await readOpenSshDefaultShell()).toBe('')
     expect(await readOpenSshDefaultShell()).toBe('')
     expect(attempts()).toBe(1)
+  })
+
+  it('retries when reg.exe could not be spawned at all', async () => {
+    // Why pinned: a spawn failure carries a string `code`, so `typeof code === 'number'`
+    // is the only thing keeping it retryable rather than cached for the process lifetime.
+    vi.useFakeTimers()
+    const { attempts } = mockAttempts([spawnFailureError(), regOutput(POWERSHELL_7)])
+    const { readOpenSshDefaultShell, OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS } = await loadModule()
+
+    expect(await readOpenSshDefaultShell()).toBe('')
+    vi.advanceTimersByTime(OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS)
+
+    expect(await readOpenSshDefaultShell()).toBe(POWERSHELL_7)
+    expect(attempts()).toBe(2)
   })
 
   it('retries after a transient failure and then returns the real DefaultShell', async () => {

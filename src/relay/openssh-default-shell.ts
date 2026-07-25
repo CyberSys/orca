@@ -32,8 +32,15 @@ let inFlight: Promise<string> | undefined
  * install, where the value simply does not exist — which is authoritative, not a
  * failure. Only a probe killed by the timeout or that failed to spawn is retryable.
  * Why exit code and not stderr text: reg.exe messages are localized.
+ *
+ * "Access is denied" also exits non-zero and so caches for the process lifetime.
+ * That matches the pre-async behavior, and a registry ACL does not flap the way a
+ * timeout does.
  */
 function probeCompleted(error: unknown): boolean {
+  // Why loose `== null`: a spawn failure (reg.exe missing) reports killed/signal as
+  // `undefined` rather than false/null, and carries a string `code` like 'ENOENT'.
+  // The `typeof code === 'number'` guard is what keeps those retryable.
   const { killed, signal, code } = (error ?? {}) as {
     killed?: boolean
     signal?: NodeJS.Signals | null
@@ -61,7 +68,7 @@ export async function readOpenSshDefaultShell(): Promise<string> {
   if (probe?.kind === 'resolved') {
     return probe.shell
   }
-  if (probe?.kind === 'failed' && Date.now() < probe.retryAtMs) {
+  if (probe?.kind === 'failed' && performance.now() < probe.retryAtMs) {
     return ''
   }
   // Why: share one in-flight probe so concurrent spawns don't each launch reg.exe.
@@ -73,7 +80,12 @@ export async function readOpenSshDefaultShell(): Promise<string> {
     .catch((error: unknown) => {
       probe = probeCompleted(error)
         ? { kind: 'resolved', shell: '' }
-        : { kind: 'failed', retryAtMs: Date.now() + OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS }
+        : {
+            kind: 'failed',
+            // Why monotonic: an NTP correction or VM resume must not stretch a 30s
+            // cooldown into an hour of not honoring the configured shell.
+            retryAtMs: performance.now() + OPENSSH_DEFAULT_SHELL_RETRY_COOLDOWN_MS
+          }
       return ''
     })
     .finally(() => {
