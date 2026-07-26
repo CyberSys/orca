@@ -13,6 +13,7 @@ import {
   recordCrashBreadcrumb
 } from './crash-breadcrumb-store'
 import { ProcessGoneDedupe } from './process-gone-dedupe'
+import { clearCarriedHighwaterBreadcrumbsForTest } from './process-gone-highwater-carryover'
 import { recordProcessGoneCrash, type ProcessGoneCrashEvent } from './process-gone-recorder'
 import { _resetTracerForTests, setActiveSink, type TracerSink } from '../observability/tracer'
 
@@ -54,12 +55,14 @@ beforeEach(() => {
   sink = capturingSink()
   setActiveSink(sink)
   clearCrashBreadcrumbsForTest()
+  clearCarriedHighwaterBreadcrumbsForTest()
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
   _resetTracerForTests()
   clearCrashBreadcrumbsForTest()
+  clearCarriedHighwaterBreadcrumbsForTest()
 })
 
 describe('recordProcessGoneCrash', () => {
@@ -351,7 +354,7 @@ describe('recordProcessGoneCrash', () => {
   })
 
   // Why: the eager clear runs before the async persist; a retry re-snapshots, so
-  // a failed persist must put the profiles back or the durable report loses the ladder.
+  // a failed persist must hand the profiles on or the durable report loses the ladder.
   it('still reports the heap ladder when the retry follows a failed persist', async () => {
     const record = vi
       .fn()
@@ -382,5 +385,40 @@ describe('recordProcessGoneCrash', () => {
         })
       ])
     )
+  })
+
+  // Why: the carryover is scoped to the retry, not to the key forever — a later
+  // renderer generation reading "OOM at 3586MB" from a dead one is the bug the
+  // eager clear exists to prevent.
+  it('does not hand the ladder to a crash beyond the retry window', async () => {
+    const record = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce({ id: 'report-2' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const startedAt = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startedAt)
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85,
+      usedHeapMB: 3586
+    })
+
+    recordProcessGoneCrash({ record } as never, event(), dedupe)
+    await vi.waitFor(() =>
+      expect(getCrashBreadcrumbSnapshot()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'crash_report_persist_failed' })])
+      )
+    )
+    now.mockReturnValue(startedAt + 60_000)
+    recordProcessGoneCrash({ record } as never, event(), dedupe)
+
+    await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2))
+    expect(
+      record.mock.calls[1][0].breadcrumbs.filter(
+        (breadcrumb: { name: string }) => breadcrumb.name === 'renderer_memory_highwater'
+      )
+    ).toEqual([])
   })
 })

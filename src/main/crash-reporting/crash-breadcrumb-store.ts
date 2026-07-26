@@ -126,30 +126,40 @@ export function clearRetainedHighwaterBreadcrumbs(options?: { surface?: Renderer
   }
 }
 
+export function filterRetainedHighwaterBreadcrumbs(
+  breadcrumbs: CrashReportBreadcrumb[]
+): CrashReportBreadcrumb[] {
+  return breadcrumbs
+    .filter((breadcrumb) => retainedBreadcrumbKey(breadcrumb) !== null)
+    .slice(-MAX_RETAINED_BREADCRUMBS)
+}
+
 /**
- * Why: process-gone clears retained profiles eagerly so the replacement renderer
- * starts clean, but a failed persist releases the dedupe claim for a retry — and
- * the retry re-snapshots. Without re-seeding, that retry writes a durable report
- * with every heap profile missing.
+ * Why: a process-gone retry re-snapshots after the eager clear, so it must fold
+ * the previous attempt's profiles back in. Lives here because only this module
+ * knows the report budget: `sanitizeCrashReportBreadcrumbs` keeps the LAST 30
+ * entries, and profiles are the oldest — appending blindly drops the ladder.
  */
-export function restoreRetainedHighwaterBreadcrumbs(snapshot: CrashReportBreadcrumb[]): void {
-  const restored = new Map<string, CrashReportBreadcrumb>()
-  for (const breadcrumb of snapshot) {
-    const key = retainedBreadcrumbKey(breadcrumb)
-    // Why: anything the live renderer already recorded for this key is newer.
-    if (key !== null && !retainedBreadcrumbs.has(key)) {
-      restored.set(key, breadcrumb)
-    }
+export function mergeRetainedHighwaterBreadcrumbs(
+  snapshot: CrashReportBreadcrumb[],
+  carried: CrashReportBreadcrumb[]
+): CrashReportBreadcrumb[] {
+  const snapshotKeys = new Set(
+    snapshot.map(retainedBreadcrumbKey).filter((key): key is string => key !== null)
+  )
+  // Why: anything the live store still holds for this key is the newer profile.
+  const missing = filterRetainedHighwaterBreadcrumbs(carried).filter(
+    (breadcrumb) => !snapshotKeys.has(String(retainedBreadcrumbKey(breadcrumb)))
+  )
+  if (missing.length === 0) {
+    return snapshot
   }
-  if (restored.size === 0) {
-    return
-  }
-  // Restored profiles predate the live entries; insertion order is eviction order.
-  for (const [key, breadcrumb] of retainedBreadcrumbs) {
-    restored.set(key, breadcrumb)
-  }
-  retainedBreadcrumbs = restored
-  evictOldestRetainedBreadcrumbs()
+  const retained = snapshot.filter((breadcrumb) => retainedBreadcrumbKey(breadcrumb) !== null)
+  const recent = snapshot.filter((breadcrumb) => retainedBreadcrumbKey(breadcrumb) === null)
+  const recentBudget = Math.max(0, MAX_BREADCRUMBS - retained.length - missing.length)
+  return [...retained, ...missing, ...recent.slice(Math.max(0, recent.length - recentBudget))].sort(
+    (left, right) => left.createdAt.localeCompare(right.createdAt)
+  )
 }
 
 export function getCrashBreadcrumbSnapshot(): CrashReportBreadcrumb[] {

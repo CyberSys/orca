@@ -1,4 +1,4 @@
-const DEFAULT_PROCESS_GONE_DEDUPE_WINDOW_MS = 2_000
+export const PROCESS_GONE_DEDUPE_WINDOW_MS = 2_000
 const DEFAULT_PROCESS_GONE_DEDUPE_MAX_KEYS = 128
 
 type ProcessGoneDedupeOptions = {
@@ -21,7 +21,7 @@ export class ProcessGoneDedupe {
   private readonly recentKeys = new Map<string, ProcessGoneDedupeEntry>()
 
   constructor(options: ProcessGoneDedupeOptions = {}) {
-    this.windowMs = options.windowMs ?? DEFAULT_PROCESS_GONE_DEDUPE_WINDOW_MS
+    this.windowMs = options.windowMs ?? PROCESS_GONE_DEDUPE_WINDOW_MS
     this.maxKeys = options.maxKeys ?? DEFAULT_PROCESS_GONE_DEDUPE_MAX_KEYS
   }
 

@@ -9,8 +9,12 @@ import type { CrashReportStore } from './crash-report-store'
 import {
   clearRetainedHighwaterBreadcrumbs,
   getCrashBreadcrumbSnapshot,
-  restoreRetainedHighwaterBreadcrumbs
+  mergeRetainedHighwaterBreadcrumbs
 } from './crash-breadcrumb-store'
+import {
+  carryHighwaterBreadcrumbsForRetry,
+  takeCarriedHighwaterBreadcrumbs
+} from './process-gone-highwater-carryover'
 import { recordDurableCrashBreadcrumb } from './durable-crash-breadcrumb'
 import {
   shouldRecordProcessGoneCrash,
@@ -118,7 +122,10 @@ export function recordProcessGoneCrash(
     ...mainProcessLifecycle
   })
   // Snapshot before the clear so the dying renderer's own report keeps its profiles.
-  const breadcrumbs = getCrashBreadcrumbSnapshot()
+  const breadcrumbs = mergeRetainedHighwaterBreadcrumbs(
+    getCrashBreadcrumbSnapshot(),
+    takeCarriedHighwaterBreadcrumbs(key)
+  )
   clearRetainedHighwatersForDeadRenderer(event)
   const span = startSpan('electron.process_gone', {
     attributes: {
@@ -162,9 +169,9 @@ export function recordProcessGoneCrash(
       breadcrumbs
     })
     .catch((error) => {
-      // Why: the retry re-snapshots, so without putting the cleared profiles back
-      // the durable report it finally writes describes an OOM with no heap ladder.
-      restoreRetainedHighwaterBreadcrumbs(breadcrumbs)
+      // Why: the retry re-snapshots after the clear, so hand it this attempt's
+      // profiles — otherwise the durable report it writes has no heap ladder.
+      carryHighwaterBreadcrumbsForRetry(key, breadcrumbs)
       dedupe.release(claim)
       console.error('[crash-reporting] Failed to persist crash report:', error)
       const data = persistFailureData(event, error)

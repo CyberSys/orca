@@ -3,9 +3,9 @@ import {
   clearCrashBreadcrumbsForTest,
   clearRetainedHighwaterBreadcrumbs,
   getCrashBreadcrumbSnapshot,
+  mergeRetainedHighwaterBreadcrumbs,
   recordCoalescedCrashBreadcrumb,
-  recordCrashBreadcrumb,
-  restoreRetainedHighwaterBreadcrumbs
+  recordCrashBreadcrumb
 } from './crash-breadcrumb-store'
 
 function retainedProfiles(): { rendererSurface?: unknown; thresholdPct?: unknown }[] {
@@ -145,38 +145,44 @@ describe('crash breadcrumb store', () => {
     expect(retainedProfiles()).toEqual([])
   })
 
-  it('re-seeds cleared profiles from a snapshot without clobbering newer ones', () => {
+  it('merges carried profiles without clobbering newer ones', () => {
     recordHighwater('main', 85, 3586)
     recordHighwater('main', 60, 2100)
-    const snapshot = getCrashBreadcrumbSnapshot()
+    const carried = getCrashBreadcrumbSnapshot()
     clearRetainedHighwaterBreadcrumbs({ surface: 'main' })
     // The replacement renderer re-crosses one level before the retry lands.
     recordHighwater('main', 60, 900)
 
-    restoreRetainedHighwaterBreadcrumbs(snapshot)
+    const merged = mergeRetainedHighwaterBreadcrumbs(getCrashBreadcrumbSnapshot(), carried)
 
     expect(
-      getCrashBreadcrumbSnapshot()
+      merged
         .filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
         .map((breadcrumb) => [breadcrumb.data?.thresholdPct, breadcrumb.data?.usedHeapMB])
+        .sort()
     ).toEqual([
-      [85, 3586],
-      [60, 900]
+      [60, 900],
+      [85, 3586]
     ])
   })
 
-  it('keeps the retained cap while re-seeding', () => {
+  it('keeps merged profiles inside the report budget by dropping oldest activity', () => {
     for (const thresholdPct of [40, 60, 75, 85]) {
       recordHighwater('main', thresholdPct)
-      recordHighwater('dashboard-popout', thresholdPct)
     }
-    const snapshot = getCrashBreadcrumbSnapshot()
+    const carried = getCrashBreadcrumbSnapshot()
     clearRetainedHighwaterBreadcrumbs({ surface: 'main' })
-    recordHighwater('third-surface', 85)
+    for (let index = 0; index < 30; index += 1) {
+      recordCrashBreadcrumb(`event_${index}`, { index })
+    }
 
-    restoreRetainedHighwaterBreadcrumbs(snapshot)
+    const merged = mergeRetainedHighwaterBreadcrumbs(getCrashBreadcrumbSnapshot(), carried)
 
-    expect(retainedProfiles()).toHaveLength(8)
+    expect(merged).toHaveLength(30)
+    expect(
+      merged.filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
+    ).toHaveLength(4)
+    expect(merged.at(-1)?.name).toBe('event_29')
   })
 
   it('redacts sensitive breadcrumb fields before they can be snapshotted', () => {
