@@ -16,6 +16,10 @@ const BYTES_PER_MEGABYTE = 1024 * 1024
 // Four levels give deltas between profiles; a 40 MB/min climb crosses 0.6→dead
 // in under an hour, so a two-level ladder produced no usable growth series.
 const RENDERER_MEMORY_HIGHWATER_RATIOS = [0.4, 0.6, 0.75, 0.85] as const
+// Why: getElementsByTagName('*') is O(DOM) and main already paid for it at most
+// twice (0.6/0.8). Cap to the same budget at 0.6/0.75 — never later at 0.85 —
+// while every rung still gets the O(panes) subsystem census for C1 deltas.
+const RENDERER_MEMORY_DOM_CENSUS_RATIOS = new Set<number>([0.6, 0.75])
 
 type BrowserPerformanceMemory = {
   usedJSHeapSize?: number
@@ -141,32 +145,36 @@ function recordRendererMemoryHighwater(
     return
   }
   const ratio = used / limit
-  let crossedThreshold = false
+  const newlyCrossed: number[] = []
   for (const threshold of RENDERER_MEMORY_HIGHWATER_RATIOS) {
     if (ratio >= threshold && !emittedHighwaterRatios.has(threshold)) {
-      crossedThreshold = true
-      break
+      newlyCrossed.push(threshold)
     }
   }
-  if (!crossedThreshold) {
+  if (newlyCrossed.length === 0) {
     return
   }
-  // Why: a single sample can cross several ladder levels; profile the large heap once.
+  // Why: subsystem census is ~O(panes/processors) and is the C1 growth series;
+  // DOM full-tree walk is the stall risk and stays on the main-like 2-shot budget.
+  const includeDomCensus = newlyCrossed.some((threshold) =>
+    RENDERER_MEMORY_DOM_CENSUS_RATIOS.has(threshold)
+  )
   const profile = compactBreadcrumbData({
     rendererSurface,
     usedHeapMB: toMegabytes(used),
     totalHeapMB: toMegabytes(memory.totalJSHeapSize),
     heapLimitMB: toMegabytes(limit),
-    domNodes: document.getElementsByTagName('*').length,
-    terminalElements: document.querySelectorAll('.xterm').length,
     browserWebviews: browserWebviews.browserWebviewCount,
     registeredBrowserGuests: browserWebviews.registeredBrowserGuestCount,
-    ...collectRendererMemoryProfileCounts()
+    ...collectRendererMemoryProfileCounts(),
+    ...(includeDomCensus
+      ? {
+          domNodes: document.getElementsByTagName('*').length,
+          terminalElements: document.querySelectorAll('.xterm').length
+        }
+      : {})
   })
-  for (const threshold of RENDERER_MEMORY_HIGHWATER_RATIOS) {
-    if (ratio < threshold || emittedHighwaterRatios.has(threshold)) {
-      continue
-    }
+  for (const threshold of newlyCrossed) {
     emittedHighwaterRatios.add(threshold)
     recordRendererCrashBreadcrumb('renderer_memory_highwater', {
       ...profile,

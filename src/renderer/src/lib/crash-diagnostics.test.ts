@@ -173,9 +173,9 @@ describe('renderer crash diagnostics', () => {
     ).not.toThrow()
   })
 
-  it('emits one-shot renderer_memory_highwater breadcrumbs with profile counts', async () => {
+  it('profiles subsystems every highwater and caps DOM census to 60%/75%', async () => {
     const memory = (window.performance as unknown as { memory: Record<string, number> }).memory
-    memory.usedJSHeapSize = 0.7 * memory.jsHeapSizeLimit
+    memory.usedJSHeapSize = 0.45 * memory.jsHeapSizeLimit
     const getElementsByTagName = vi.fn(() => ({ length: 4321 }))
     const querySelectorAll = vi.fn(() => ({ length: 6 }))
     vi.stubGlobal('document', {
@@ -192,41 +192,90 @@ describe('renderer crash diagnostics', () => {
       recordBreadcrumbMock.mock.calls.filter(
         (call) => (call[0] as { name: string }).name === 'renderer_memory_highwater'
       )
-    // Why 2: a 0.7 heap has already crossed the 0.4 and 0.6 levels.
-    expect(highwaterCalls()).toHaveLength(2)
+    // Why: 40% is a new ladder rung — subsystem census only, no full DOM walk.
+    expect(highwaterCalls()).toHaveLength(1)
+    expect(getElementsByTagName).not.toHaveBeenCalled()
+    expect(querySelectorAll).not.toHaveBeenCalled()
     expect(recordBreadcrumbMock).toHaveBeenCalledWith({
       name: 'renderer_memory_highwater',
       data: expect.objectContaining({
-        thresholdPct: 60,
+        thresholdPct: 40,
         rendererSurface: 'main',
-        domNodes: 4321,
-        terminalElements: 6,
         browserWebviews: 4,
         registeredBrowserGuests: 3,
         'store.worktrees': 12
       })
     })
+    expect(recordBreadcrumbMock).toHaveBeenCalledWith({
+      name: 'renderer_memory_highwater',
+      data: expect.not.objectContaining({
+        domNodes: expect.anything(),
+        terminalElements: expect.anything()
+      })
+    })
+
+    const tick = setIntervalMock.mock.calls[0][0] as () => void
+    memory.usedJSHeapSize = 0.7 * memory.jsHeapSizeLimit
+    tick()
+    // Why 2 total: 40 already emitted; 60 is the first DOM checkpoint.
+    expect(highwaterCalls()).toHaveLength(2)
+    expect(getElementsByTagName).toHaveBeenCalledTimes(1)
+    expect(querySelectorAll).toHaveBeenCalledTimes(1)
+    expect(recordBreadcrumbMock).toHaveBeenCalledWith({
+      name: 'renderer_memory_highwater',
+      data: expect.objectContaining({
+        thresholdPct: 60,
+        domNodes: 4321,
+        terminalElements: 6,
+        'store.worktrees': 12
+      })
+    })
 
     // Why: the interval sampler must not re-emit an already-crossed threshold.
-    const tick = setIntervalMock.mock.calls[0][0] as () => void
     tick()
     expect(highwaterCalls()).toHaveLength(2)
 
     memory.usedJSHeapSize = 0.86 * memory.jsHeapSizeLimit
     tick()
     expect(highwaterCalls()).toHaveLength(4)
+    // Why: second (and last) DOM shot is 75%; 85 reuses that sample's snapshot.
+    expect(getElementsByTagName).toHaveBeenCalledTimes(2)
+    expect(querySelectorAll).toHaveBeenCalledTimes(2)
     expect(recordBreadcrumbMock).toHaveBeenCalledWith({
       name: 'renderer_memory_highwater',
-      data: expect.objectContaining({ thresholdPct: 85 })
+      data: expect.objectContaining({
+        thresholdPct: 75,
+        domNodes: 4321,
+        'store.worktrees': 12
+      })
+    })
+    expect(recordBreadcrumbMock).toHaveBeenCalledWith({
+      name: 'renderer_memory_highwater',
+      data: expect.objectContaining({
+        thresholdPct: 85,
+        domNodes: 4321,
+        'store.worktrees': 12
+      })
     })
 
-    // Why: a heap that jumps straight past every level must emit them all at once.
+    // Why: a jump past every rung still profiles subsystems once and DOM once
+    // (60 and 75 are among the newly crossed set).
     diagnostics._disposeRendererCrashDiagnosticsForTests()
     recordBreadcrumbMock.mockClear()
+    getElementsByTagName.mockClear()
+    querySelectorAll.mockClear()
     diagnostics.installRendererCrashDiagnostics()
     expect(highwaterCalls()).toHaveLength(4)
-    expect(getElementsByTagName).toHaveBeenCalledTimes(3)
-    expect(querySelectorAll).toHaveBeenCalledTimes(3)
+    expect(getElementsByTagName).toHaveBeenCalledTimes(1)
+    expect(querySelectorAll).toHaveBeenCalledTimes(1)
+    expect(recordBreadcrumbMock).toHaveBeenCalledWith({
+      name: 'renderer_memory_highwater',
+      data: expect.objectContaining({
+        thresholdPct: 40,
+        domNodes: 4321,
+        'store.worktrees': 12
+      })
+    })
 
     unregister()
   })
