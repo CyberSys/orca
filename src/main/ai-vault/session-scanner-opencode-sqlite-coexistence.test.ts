@@ -233,7 +233,7 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
       expect(persistenceMock.lastStats?.fullParses).toBe(8)
       expect(result.sessions).toEqual([])
       expect(
-        result.issues.filter((issue) => /OpenCode history was skipped/.test(issue.message))
+        result.issues.filter((issue) => issue.message.includes('OpenCode history was skipped'))
       ).toHaveLength(1)
     } finally {
       vi.useRealTimers()

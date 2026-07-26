@@ -174,8 +174,7 @@ export async function parseAgentSessionFileCached(
   const entry = cache.get(file.path)
 
   const unchanged =
-    entry !== undefined &&
-    entry.platform === platform &&
+    entry?.platform === platform &&
     entry.mtimeMs === file.mtimeMs &&
     (entry.sizeBytes === null || file.sizeBytes === undefined || entry.sizeBytes === file.sizeBytes)
   if (unchanged) {

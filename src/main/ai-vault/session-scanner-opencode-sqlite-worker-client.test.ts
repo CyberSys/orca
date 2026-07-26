@@ -451,7 +451,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
       client.list({ context, dbPaths: ['/tmp/opencode.db'], limit: 10, issues: listIssues })
     ).resolves.toEqual([])
     expect(
-      listIssues.some((issue) => /background scanner could not start/.test(issue.message))
+      listIssues.some((issue) => issue.message.includes('background scanner could not start'))
     ).toBe(true)
     await expect(
       client.parse({
@@ -549,7 +549,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
     const first = await client.list({ context, dbPaths: ['/db'], limit: 10, issues: firstIssues })
     expect(first).toEqual([])
     expect(
-      firstIssues.some((issue) => /background scanner could not start/.test(issue.message))
+      firstIssues.some((issue) => issue.message.includes('background scanner could not start'))
     ).toBe(true)
     await expect(
       client.parse({ context, dbPath: '/db', sessionId: 'ses_heal', platform: 'darwin' })
