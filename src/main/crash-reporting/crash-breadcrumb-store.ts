@@ -102,6 +102,21 @@ export function recordCoalescedCrashBreadcrumb({
 }
 
 /**
+ * Which surface a retained profile belongs to, for the surface-scoped clear and
+ * for the retry carryover that folds that clear back in.
+ *
+ * Why: an unattributed profile has no owner that could re-emit it, so the dying
+ * renderer takes it rather than leaving it to poison the next report.
+ */
+export function ownsRetainedHighwaterBreadcrumb(
+  breadcrumb: CrashReportBreadcrumb,
+  surface: RendererSurface
+): boolean {
+  const breadcrumbSurface = breadcrumb.data?.rendererSurface
+  return typeof breadcrumbSurface !== 'string' || breadcrumbSurface === surface
+}
+
+/**
  * Why: retained profiles are keyed by surface+threshold with no generation, and
  * a renderer reload resets the renderer-side one-shot guard while this store
  * survives. Without dropping them at process-gone, the next renderer's crash
@@ -117,10 +132,7 @@ export function clearRetainedHighwaterBreadcrumbs(options?: { surface?: Renderer
     return
   }
   for (const [key, breadcrumb] of retainedBreadcrumbs) {
-    const breadcrumbSurface = breadcrumb.data?.rendererSurface
-    // Why: an unattributed profile has no owner that could re-emit it, so the
-    // dying renderer takes it rather than leaving it to poison the next report.
-    if (typeof breadcrumbSurface !== 'string' || breadcrumbSurface === surface) {
+    if (ownsRetainedHighwaterBreadcrumb(breadcrumb, surface)) {
       retainedBreadcrumbs.delete(key)
     }
   }

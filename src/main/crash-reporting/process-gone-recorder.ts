@@ -69,12 +69,20 @@ function persistFailureData(event: ProcessGoneCrashEvent, error: unknown) {
  * successor re-arms its own ladder from zero. Only a real process death counts:
  * React error-boundary reports share source 'renderer' with no process gone.
  */
-function clearRetainedHighwatersForDeadRenderer(event: ProcessGoneCrashEvent): void {
+function deadRendererSurface(event: ProcessGoneCrashEvent): RendererSurface | undefined {
   if (event.source !== 'renderer' || event.processType.toLowerCase() !== 'renderer') {
-    return
+    return undefined
   }
   // Why: only the main window wires process-gone today, so an unstamped event is its.
-  clearRetainedHighwaterBreadcrumbs({ surface: event.rendererSurface ?? 'main' })
+  return event.rendererSurface ?? 'main'
+}
+
+function clearRetainedHighwatersForDeadRenderer(event: ProcessGoneCrashEvent): void {
+  const surface = deadRendererSurface(event)
+  if (!surface) {
+    return
+  }
+  clearRetainedHighwaterBreadcrumbs({ surface })
 }
 
 export function recordProcessGoneCrash(
@@ -121,10 +129,11 @@ export function recordProcessGoneCrash(
     ...event.details,
     ...mainProcessLifecycle
   })
+  const surface = deadRendererSurface(event)
   // Snapshot before the clear so the dying renderer's own report keeps its profiles.
   const breadcrumbs = mergeRetainedHighwaterBreadcrumbs(
     getCrashBreadcrumbSnapshot(),
-    takeCarriedHighwaterBreadcrumbs(key)
+    takeCarriedHighwaterBreadcrumbs(key, { surface })
   )
   clearRetainedHighwatersForDeadRenderer(event)
   const span = startSpan('electron.process_gone', {
@@ -171,7 +180,7 @@ export function recordProcessGoneCrash(
     .catch((error) => {
       // Why: the retry re-snapshots after the clear, so hand it this attempt's
       // profiles — otherwise the durable report it writes has no heap ladder.
-      carryHighwaterBreadcrumbsForRetry(key, breadcrumbs)
+      carryHighwaterBreadcrumbsForRetry(key, breadcrumbs, { surface })
       dedupe.release(claim)
       console.error('[crash-reporting] Failed to persist crash report:', error)
       const data = persistFailureData(event, error)

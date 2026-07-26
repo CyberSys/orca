@@ -421,4 +421,39 @@ describe('recordProcessGoneCrash', () => {
       )
     ).toEqual([])
   })
+
+  // Why: the dedupe key omits the surface, so a popout dying the same way inside
+  // the window claims the main window's stash — and inherits its ladder.
+  it('does not hand a sibling surface the dead renderer stash', async () => {
+    const record = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce({ id: 'report-2' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85,
+      usedHeapMB: 3586
+    })
+
+    recordProcessGoneCrash({ record } as never, event({ rendererSurface: 'main' }), dedupe)
+    await vi.waitFor(() =>
+      expect(getCrashBreadcrumbSnapshot()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'crash_report_persist_failed' })])
+      )
+    )
+    recordProcessGoneCrash(
+      { record } as never,
+      event({ rendererSurface: 'dashboard-popout' }),
+      dedupe
+    )
+
+    await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2))
+    expect(
+      record.mock.calls[1][0].breadcrumbs.filter(
+        (breadcrumb: { name: string }) => breadcrumb.name === 'renderer_memory_highwater'
+      )
+    ).toEqual([])
+  })
 })

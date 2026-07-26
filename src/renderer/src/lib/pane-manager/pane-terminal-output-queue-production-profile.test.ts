@@ -42,6 +42,16 @@ describe('terminalOutputQueue profile in production builds', () => {
       foreground: false,
       latencySensitive: false
     })
+
+    // Why: a drained queue reports 0 either way, so prove the instantaneous
+    // gauges are live in production before letting the backlog drain.
+    expect(collectRendererMemoryProfileCounts()).toEqual(
+      expect.objectContaining({
+        'terminalOutputQueue.terminals': 1,
+        'terminalOutputQueue.queuedChars': 32 * 1024,
+        'terminalOutputQueue.maxQueuedCharsPerTerminal': 32 * 1024
+      })
+    )
     vi.advanceTimersByTime(1000)
 
     const counts = collectRendererMemoryProfileCounts()
