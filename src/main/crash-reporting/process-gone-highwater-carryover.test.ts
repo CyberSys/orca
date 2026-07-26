@@ -92,6 +92,27 @@ describe('process-gone highwater carryover', () => {
     ).toEqual([highwater(85)])
   })
 
+  it('keeps each surface stash when a sibling shares the dedupe key', () => {
+    carryHighwaterBreadcrumbsForRetry('renderer:renderer', [highwater(85)], {
+      surface: 'main',
+      now: 1_000
+    })
+    carryHighwaterBreadcrumbsForRetry('renderer:renderer', [highwater(90, 'dashboard-popout')], {
+      surface: 'dashboard-popout',
+      now: 1_000
+    })
+
+    expect(
+      takeCarriedHighwaterBreadcrumbs('renderer:renderer', {
+        surface: 'dashboard-popout',
+        now: 1_000
+      })
+    ).toEqual([highwater(90, 'dashboard-popout')])
+    expect(
+      takeCarriedHighwaterBreadcrumbs('renderer:renderer', { surface: 'main', now: 1_000 })
+    ).toEqual([highwater(85)])
+  })
+
   it('bounds the key map', () => {
     for (let index = 0; index < 12; index += 1) {
       carryHighwaterBreadcrumbsForRetry(`child:service-${index}`, [highwater(85)], { now: 1_000 })

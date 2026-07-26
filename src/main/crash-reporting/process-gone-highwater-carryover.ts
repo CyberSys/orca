@@ -13,26 +13,34 @@ const MAX_CARRYOVER_KEYS = 8
 
 type CarriedHighwaters = {
   readonly stashedAt: number
-  readonly surface: RendererSurface | undefined
   readonly breadcrumbs: CrashReportBreadcrumb[]
 }
 
 type CarryoverScope = { surface?: RendererSurface; now?: number }
 
-const carriedByDedupeKey = new Map<string, CarriedHighwaters>()
+const carriedByScopedKey = new Map<string, CarriedHighwaters>()
+
+/**
+ * Why: the dedupe key omits the surface, so a sibling surface dying the same way
+ * shares it. Scope the stash key so the sibling neither reads our profiles nor
+ * evicts them when its own persist fails.
+ */
+function carryoverKey(dedupeKey: string, surface: RendererSurface | undefined): string {
+  return `${dedupeKey}\u0000${surface ?? ''}`
+}
 
 function prune(now: number): void {
-  for (const [key, entry] of carriedByDedupeKey) {
+  for (const [key, entry] of carriedByScopedKey) {
     if (now - entry.stashedAt >= CARRYOVER_TTL_MS) {
-      carriedByDedupeKey.delete(key)
+      carriedByScopedKey.delete(key)
     }
   }
-  while (carriedByDedupeKey.size > MAX_CARRYOVER_KEYS) {
-    const oldest = carriedByDedupeKey.keys().next()
+  while (carriedByScopedKey.size > MAX_CARRYOVER_KEYS) {
+    const oldest = carriedByScopedKey.keys().next()
     if (oldest.done) {
       break
     }
-    carriedByDedupeKey.delete(oldest.value)
+    carriedByScopedKey.delete(oldest.value)
   }
 }
 
@@ -54,12 +62,13 @@ export function carryHighwaterBreadcrumbsForRetry(
   const highwaters = filterRetainedHighwaterBreadcrumbs(breadcrumbs).filter(
     (breadcrumb) => surface === undefined || ownsRetainedHighwaterBreadcrumb(breadcrumb, surface)
   )
+  const scopedKey = carryoverKey(key, surface)
   prune(now)
-  carriedByDedupeKey.delete(key)
+  carriedByScopedKey.delete(scopedKey)
   if (highwaters.length === 0) {
     return
   }
-  carriedByDedupeKey.set(key, { stashedAt: now, surface, breadcrumbs: highwaters })
+  carriedByScopedKey.set(scopedKey, { stashedAt: now, breadcrumbs: highwaters })
 }
 
 export function takeCarriedHighwaterBreadcrumbs(
@@ -67,21 +76,16 @@ export function takeCarriedHighwaterBreadcrumbs(
   { surface, now = Date.now() }: CarryoverScope = {}
 ): CrashReportBreadcrumb[] {
   prune(now)
-  const entry = carriedByDedupeKey.get(key)
+  const scopedKey = carryoverKey(key, surface)
+  const entry = carriedByScopedKey.get(scopedKey)
   if (!entry) {
     return []
   }
-  // Why: the dedupe key omits the surface, so a sibling surface dying the same
-  // way can claim it. Leave the stash for the real retry rather than handing a
-  // dead surface's ladder to a different renderer.
-  if (entry.surface !== surface) {
-    return []
-  }
   // Consume on read: a retry that succeeds must not re-arm the next generation.
-  carriedByDedupeKey.delete(key)
+  carriedByScopedKey.delete(scopedKey)
   return entry.breadcrumbs
 }
 
 export function clearCarriedHighwaterBreadcrumbsForTest(): void {
-  carriedByDedupeKey.clear()
+  carriedByScopedKey.clear()
 }

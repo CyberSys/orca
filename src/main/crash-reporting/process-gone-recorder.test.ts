@@ -43,6 +43,16 @@ function event(overrides: Partial<ProcessGoneCrashEvent> = {}): ProcessGoneCrash
   }
 }
 
+function highwatersIn(breadcrumbs: { name: string }[]): { name: string }[] {
+  return breadcrumbs.filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
+}
+
+function persistFailureCount(): number {
+  return getCrashBreadcrumbSnapshot().filter(
+    (breadcrumb) => breadcrumb.name === 'crash_report_persist_failed'
+  ).length
+}
+
 function highwaterSurfaces(): unknown[] {
   return getCrashBreadcrumbSnapshot()
     .filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
@@ -423,12 +433,14 @@ describe('recordProcessGoneCrash', () => {
   })
 
   // Why: the dedupe key omits the surface, so a popout dying the same way inside
-  // the window claims the main window's stash — and inherits its ladder.
-  it('does not hand a sibling surface the dead renderer stash', async () => {
+  // the window claims the main window's stash — and inherits its ladder. Its own
+  // failed persist must not evict that stash either: the main retry still needs it.
+  it('holds the dead renderer stash for its own retry, not a sibling surface', async () => {
     const record = vi
       .fn()
       .mockRejectedValueOnce(new Error('disk unavailable'))
-      .mockResolvedValueOnce({ id: 'report-2' })
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce({ id: 'report-3' })
     const dedupe = new ProcessGoneDedupe()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     recordCrashBreadcrumb('renderer_memory_highwater', {
@@ -438,22 +450,27 @@ describe('recordProcessGoneCrash', () => {
     })
 
     recordProcessGoneCrash({ record } as never, event({ rendererSurface: 'main' }), dedupe)
-    await vi.waitFor(() =>
-      expect(getCrashBreadcrumbSnapshot()).toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'crash_report_persist_failed' })])
-      )
-    )
+    await vi.waitFor(() => expect(persistFailureCount()).toBe(1))
     recordProcessGoneCrash(
       { record } as never,
       event({ rendererSurface: 'dashboard-popout' }),
       dedupe
     )
 
-    await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2))
-    expect(
-      record.mock.calls[1][0].breadcrumbs.filter(
-        (breadcrumb: { name: string }) => breadcrumb.name === 'renderer_memory_highwater'
-      )
-    ).toEqual([])
+    await vi.waitFor(() => expect(persistFailureCount()).toBe(2))
+    expect(highwatersIn(record.mock.calls[1][0].breadcrumbs)).toEqual([])
+
+    recordProcessGoneCrash({ record } as never, event({ rendererSurface: 'main' }), dedupe)
+
+    await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(3))
+    expect(highwatersIn(record.mock.calls[2][0].breadcrumbs)).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rendererSurface: 'main',
+          thresholdPct: 85,
+          usedHeapMB: 3586
+        })
+      })
+    ])
   })
 })
