@@ -9,6 +9,9 @@ import type { AiVaultScanIssue, AiVaultSession } from '../../shared/ai-vault-typ
 import type { SessionFileCandidate } from './session-scanner-types'
 import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
 import { buildOpenCodeSqliteCandidatePath } from './session-scanner-opencode-sqlite-paths'
+import type { SessionParseStats } from './session-scanner-parse-cache'
+import type * as GrokParserModule from './session-scanner-grok-parser'
+import type * as ParseCachePersistenceModule from './session-parse-cache-persistence'
 
 type WorkerListArgs = {
   context: OpenCodeSqliteScanContext
@@ -31,6 +34,15 @@ const workerMock = vi.hoisted(() => ({
   parseOverride: null as null | ((args: WorkerParseArgs) => Promise<AiVaultSession | null>)
 }))
 
+const grokMock = vi.hoisted(() => ({
+  calls: 0,
+  override: null as null | (() => Promise<AiVaultSession | null>)
+}))
+
+const persistenceMock = vi.hoisted(() => ({
+  lastStats: null as SessionParseStats | null
+}))
+
 // Why: this source-level integration suite has no built worker entry. Keep its
 // SQLite fixtures inline explicitly; production fails closed if the bundle is absent.
 vi.mock('./session-scanner-opencode-sqlite-worker-spawn', async () => {
@@ -50,6 +62,28 @@ vi.mock('./session-scanner-opencode-sqlite-worker-spawn', async () => {
   }
 })
 
+vi.mock('./session-scanner-grok-parser', async (importOriginal) => {
+  const actual = await importOriginal<typeof GrokParserModule>()
+  return {
+    ...actual,
+    parseGrokSessionFile: (...args: Parameters<typeof actual.parseGrokSessionFile>) => {
+      grokMock.calls += 1
+      return grokMock.override?.() ?? actual.parseGrokSessionFile(...args)
+    }
+  }
+})
+
+vi.mock('./session-parse-cache-persistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof ParseCachePersistenceModule>()
+  return {
+    ...actual,
+    scheduleSessionParseCachePersist(stats: SessionParseStats) {
+      persistenceMock.lastStats = { ...stats }
+      actual.scheduleSessionParseCachePersist(stats)
+    }
+  }
+})
+
 let tempRoots: string[] = []
 let tempDbDirs: string[] = []
 
@@ -58,6 +92,9 @@ afterEach(async () => {
   workerMock.parseCalls = 0
   workerMock.listOverride = null
   workerMock.parseOverride = null
+  grokMock.calls = 0
+  grokMock.override = null
+  persistenceMock.lastStats = null
   await Promise.all(tempRoots.map((root) => rm(root, { recursive: true, force: true })))
   for (const dir of tempDbDirs) {
     rmSync(dir, { recursive: true, force: true })
@@ -193,10 +230,94 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
 
       expect(workerMock.listCalls).toBe(2)
       expect(workerMock.parseCalls).toBe(8)
+      expect(persistenceMock.lastStats?.fullParses).toBe(8)
       expect(result.sessions).toEqual([])
       expect(
         result.issues.filter((issue) => /OpenCode history was skipped/.test(issue.message))
       ).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('disarms after the last SQLite promise while a mixed-batch parser remains active', async () => {
+    vi.useFakeTimers()
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-mixed-disarm-'))
+      tempRoots.push(root)
+      const roots = isolatedScanRoots(root)
+      await mkdir(roots.grokSessionsDir, { recursive: true })
+      await writeFile(join(roots.grokSessionsDir, 'summary.json'), '{}')
+
+      let context: OpenCodeSqliteScanContext | null = null
+      let finishGrok: (() => void) | null = null
+      workerMock.listOverride = async (args) => {
+        context = args.context
+        return [
+          {
+            agent: 'opencode',
+            codexHome: null,
+            file: {
+              path: buildOpenCodeSqliteCandidatePath('/data/opencode.db', 'mixed-session'),
+              mtimeMs: Date.now(),
+              modifiedAt: new Date().toISOString()
+            }
+          }
+        ]
+      }
+      workerMock.parseOverride = async (args) => {
+        context = args.context
+        return null
+      }
+      grokMock.override = () =>
+        new Promise((resolve) => {
+          finishGrok = () => resolve(null)
+        })
+
+      const scan = scanAiVaultSessions({ ...roots, limit: 10 })
+      await vi.waitFor(() => {
+        expect(workerMock.parseCalls).toBe(1)
+        expect(grokMock.calls).toBe(1)
+      })
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(context).not.toBeNull()
+      expect(context!.metrics().deadlineExpired).toBe(false)
+
+      finishGrok!()
+      await expect(scan).resolves.toBeDefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('disarms a no-database scan before unrelated parsing completes', async () => {
+    vi.useFakeTimers()
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-no-db-disarm-'))
+      tempRoots.push(root)
+      const roots = isolatedScanRoots(root)
+      await mkdir(roots.grokSessionsDir, { recursive: true })
+      await writeFile(join(roots.grokSessionsDir, 'summary.json'), '{}')
+
+      let context: OpenCodeSqliteScanContext | null = null
+      let finishGrok: (() => void) | null = null
+      workerMock.listOverride = async (args) => {
+        context = args.context
+        return []
+      }
+      grokMock.override = () =>
+        new Promise((resolve) => {
+          finishGrok = () => resolve(null)
+        })
+
+      const scan = scanAiVaultSessions({ ...roots, limit: 10 })
+      await vi.waitFor(() => expect(grokMock.calls).toBe(1))
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(context).not.toBeNull()
+      expect(context!.metrics().deadlineExpired).toBe(false)
+
+      finishGrok!()
+      await expect(scan).resolves.toBeDefined()
     } finally {
       vi.useRealTimers()
     }

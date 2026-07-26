@@ -490,11 +490,14 @@ describe('session parse cache persistence', () => {
     const cacheFile = join(root, 'session-parse-cache.json')
     const transcript = await writeTranscript(root)
     const candidate = await claudeCandidate(transcript)
+    const largeSession = {
+      padding: 'x'.repeat(14_000)
+    } as unknown as PersistedSessionParseCacheEntry['session']
     const entry: PersistedSessionParseCacheEntry = {
       mtimeMs: candidate.file.mtimeMs,
       sizeBytes: candidate.file.sizeBytes ?? null,
       platform: process.platform,
-      session: null
+      session: largeSession
     }
     seedSessionParseCache([
       ...Array.from({ length: 4095 }, (_, index): [string, PersistedSessionParseCacheEntry] => [
@@ -517,7 +520,9 @@ describe('session parse cache persistence', () => {
     const stats = createSessionParseStats()
     await parseAgentSessionFileCached(candidate, process.platform, stats)
     expect(stats.reused).toBe(1)
-    expect(JSON.parse(await readFile(cacheFile, 'utf8')).entries).toHaveLength(4096)
+    const persistedText = await readFile(cacheFile, 'utf8')
+    expect(Buffer.byteLength(persistedText)).toBeGreaterThan(54 * 1024 * 1024)
+    expect(JSON.parse(persistedText).entries).toHaveLength(4096)
   })
 
   it('rejects malformed entries even when they fall outside the retained tail', async () => {

@@ -81,6 +81,16 @@ function makeFactory(workers: FakeWorker[]): () => Worker {
   }
 }
 
+function emitSettlementRaceEvent(worker: FakeWorker, event: 'message' | 'error' | 'exit'): void {
+  if (event === 'message') {
+    worker.emit('message', { id: worker.lastId(), ok: true, value: 'response' })
+  } else if (event === 'error') {
+    worker.emit('error', new Error('worker race error'))
+  } else {
+    worker.emit('exit', 1)
+  }
+}
+
 let context: OpenCodeSqliteScanContext
 
 beforeEach(() => {
@@ -233,12 +243,17 @@ describe('OpenCodeSqliteWorkerClient', () => {
         workerFactory: makeFactory(workers),
         log() {}
       })
-      const active = client.parse({
-        context: expiringContext,
-        dbPath: '/db#a',
-        sessionId: 'a',
-        platform: 'darwin'
-      })
+      let activeSettlements = 0
+      const active = client
+        .parse({
+          context: expiringContext,
+          dbPath: '/db#a',
+          sessionId: 'a',
+          platform: 'darwin'
+        })
+        .finally(() => {
+          activeSettlements += 1
+        })
       const retained = client.parse({
         context: retainedContext,
         dbPath: '/db#b',
@@ -256,6 +271,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
 
       await vi.advanceTimersByTimeAsync(10)
       await Promise.all([activeRejection, queuedRejection])
+      expect(activeSettlements).toBe(1)
       expect(workers[0]!.terminated).toBe(true)
       expect(workers).toHaveLength(2)
       workers[1]!.emit('message', { id: workers[1]!.lastId(), ok: true, value: 'B' })
@@ -268,6 +284,39 @@ describe('OpenCodeSqliteWorkerClient', () => {
     } finally {
       expiringContext.dispose()
       retainedContext.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('settles once when the per-call timeout wins a later context abort', async () => {
+    vi.useFakeTimers()
+    const timeoutContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
+    try {
+      const workers: FakeWorker[] = []
+      const client = new OpenCodeSqliteWorkerClient({
+        workerFactory: makeFactory(workers),
+        log() {}
+      })
+      let settlements = 0
+      const outcome = client
+        .parse({
+          context: timeoutContext,
+          dbPath: '/db#a',
+          sessionId: 'a',
+          platform: 'darwin'
+        })
+        .catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
+        .finally(() => {
+          settlements += 1
+        })
+
+      await vi.advanceTimersByTimeAsync(PARSE_TIMEOUT_MS)
+      await expect(outcome).resolves.toMatch(/timed out/)
+      timeoutContext.dispose()
+      await vi.advanceTimersByTimeAsync(PARSE_TIMEOUT_MS)
+      expect(settlements).toBe(1)
+    } finally {
+      timeoutContext.dispose()
       vi.useRealTimers()
     }
   })
@@ -328,6 +377,66 @@ describe('OpenCodeSqliteWorkerClient', () => {
     expect(workers[0]!.terminated).toBe(true)
     expect(exceptionalContext.metrics().workOmitted).toBe(true)
   })
+
+  it.each(['message', 'error', 'exit'] as const)(
+    'settles once when context abort wins the %s race',
+    async (event) => {
+      const workers: FakeWorker[] = []
+      const client = new OpenCodeSqliteWorkerClient({
+        workerFactory: makeFactory(workers),
+        log() {}
+      })
+      let settlements = 0
+      const parse = client
+        .parse({ context, dbPath: '/db#a', sessionId: 'a', platform: 'darwin' })
+        .finally(() => {
+          settlements += 1
+        })
+      const rejection = expect(parse).rejects.toThrow(/scan ended/)
+
+      context.dispose()
+      await rejection
+      emitSettlementRaceEvent(workers[0]!, event)
+      await Promise.resolve()
+      expect(settlements).toBe(1)
+      expect(workers[0]!.terminated).toBe(true)
+    }
+  )
+
+  it.each(['message', 'error', 'exit'] as const)(
+    'settles once when the worker %s wins the context-abort race',
+    async (event) => {
+      const workers: FakeWorker[] = []
+      const client = new OpenCodeSqliteWorkerClient({
+        workerFactory: makeFactory(workers),
+        log() {}
+      })
+      let settlements = 0
+      const outcome = client
+        .parse({ context, dbPath: '/db#a', sessionId: 'a', platform: 'darwin' })
+        .then(
+          (value) => ({ error: null, value }),
+          (error: unknown) => ({
+            error: error instanceof Error ? error.message : String(error),
+            value: null
+          })
+        )
+        .finally(() => {
+          settlements += 1
+        })
+
+      emitSettlementRaceEvent(workers[0]!, event)
+      const settled = await outcome
+      context.dispose()
+      await Promise.resolve()
+      expect(settlements).toBe(1)
+      if (event === 'message') {
+        expect(settled.error).toBeNull()
+      } else {
+        expect(settled.error).toEqual(expect.any(String))
+      }
+    }
+  )
 
   it('fails closed instead of running SQLite on the main thread when spawn fails', async () => {
     const client = new OpenCodeSqliteWorkerClient({
