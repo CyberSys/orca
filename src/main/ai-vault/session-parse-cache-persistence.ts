@@ -3,9 +3,13 @@
 // of re-reading the whole transcript corpus (issue #9210: 6.7 GB / 109 s cold
 // scans). Disabled unless the composition root calls init; every failure mode
 // degrades to today's cold-scan behavior.
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { assertJsonTextStructureWithinLimits } from '../../shared/json-text-structure-limit'
+import { readNodeFileWithinLimit } from '../../shared/node-bounded-file-reader'
+import { stringifyJsonWithinByteLimit } from '../../shared/node-bounded-json-stringify'
 import {
+  MAX_CACHE_ENTRIES,
   seedSessionParseCache,
   snapshotSessionParseCacheForPersistence,
   type PersistedSessionParseCacheEntry,
@@ -20,6 +24,11 @@ const SAVE_DEBOUNCE_MS = 1_500
 // (mode bits are inert on Windows — the userData ACL grant is the boundary there).
 const PRIVATE_DIRECTORY_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
+export const SESSION_PARSE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+export const SESSION_PARSE_CACHE_JSON_LIMITS = {
+  structuralTokens: 1_000_000,
+  nestingDepth: 32
+} as const
 
 type SessionParseCachePersistenceOptions = {
   filePath: string
@@ -98,7 +107,12 @@ export async function flushSessionParseCachePersistForTests(): Promise<void> {
 async function loadPersistedEntries(current: SessionParseCachePersistenceOptions): Promise<void> {
   await sweepOrphanedTempFiles(current.filePath)
   try {
-    const raw = await readFile(current.filePath, 'utf-8')
+    const { buffer } = await readNodeFileWithinLimit(
+      current.filePath,
+      SESSION_PARSE_CACHE_MAX_BYTES
+    )
+    const raw = buffer.toString('utf8')
+    assertJsonTextStructureWithinLimits(raw, SESSION_PARSE_CACHE_JSON_LIMITS)
     const entries = parsePersistedFile(JSON.parse(raw), current.appVersion)
     if (entries) {
       seedSessionParseCache(entries)
@@ -143,15 +157,19 @@ function parsePersistedFile(
     return null
   }
   const entries: [string, PersistedSessionParseCacheEntry][] = []
-  for (const item of file.entries) {
-    const entry = parsePersistedEntry(item)
+  const retainedPaths = new Set<string>()
+  for (let index = file.entries.length - 1; index >= 0; index -= 1) {
+    const entry = parsePersistedEntry(file.entries[index])
     if (entry === null) {
       // One malformed entry means the file can't be trusted; discard it whole.
       return null
     }
-    entries.push(entry)
+    if (entries.length < MAX_CACHE_ENTRIES && !retainedPaths.has(entry[0])) {
+      retainedPaths.add(entry[0])
+      entries.push(entry)
+    }
   }
-  return entries
+  return entries.toReversed()
 }
 
 function parsePersistedEntry(item: unknown): [string, PersistedSessionParseCacheEntry] | null {
@@ -190,11 +208,15 @@ async function persistSnapshot(current: SessionParseCachePersistenceOptions): Pr
   const directory = dirname(current.filePath)
   const tempPath = join(directory, `session-parse-cache-${process.pid}-${Date.now()}.tmp`)
   try {
-    const payload = JSON.stringify({
-      schemaVersion: SCHEMA_VERSION,
-      appVersion: current.appVersion,
-      entries: snapshotSessionParseCacheForPersistence()
-    })
+    const { serialized: payload } = stringifyJsonWithinByteLimit(
+      {
+        schemaVersion: SCHEMA_VERSION,
+        appVersion: current.appVersion,
+        entries: snapshotSessionParseCacheForPersistence()
+      },
+      SESSION_PARSE_CACHE_MAX_BYTES
+    )
+    assertJsonTextStructureWithinLimits(payload, SESSION_PARSE_CACHE_JSON_LIMITS)
     await mkdir(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
     await writeFile(tempPath, payload, { mode: PRIVATE_FILE_MODE })
     // Atomic on POSIX; on Windows a rename racing an open handle fails and is

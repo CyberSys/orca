@@ -17,6 +17,7 @@ import {
   parseOpenCodeSessionFile
 } from './session-scanner-secondary-parsers'
 import type { SessionFileCandidate } from './session-scanner-types'
+import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
 
 /**
  * Parse a single agent session file into an `AiVaultSession`. Routes to the
@@ -29,7 +30,8 @@ import type { SessionFileCandidate } from './session-scanner-types'
  */
 export async function parseAgentSessionFile(
   candidate: SessionFileCandidate,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  opencodeSqliteScanContext?: OpenCodeSqliteScanContext
 ): Promise<AiVaultSession | null> {
   switch (candidate.agent) {
     case 'claude':
@@ -50,7 +52,11 @@ export async function parseAgentSessionFile(
       // real filesystem paths and fall through to the JSON parser.
       const sqliteCandidate = splitOpenCodeSqliteCandidate(candidate.file.path)
       if (sqliteCandidate) {
+        if (!opencodeSqliteScanContext) {
+          throw new Error('OpenCode SQLite parsing requires a scan context')
+        }
         return parseOpenCodeSqliteSessionViaWorker({
+          context: opencodeSqliteScanContext,
           dbPath: sqliteCandidate.dbPath,
           sessionId: sqliteCandidate.sessionId,
           platform

@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises'
 import type {
   AiVaultListResult,
   AiVaultScanIssue,
@@ -14,6 +13,7 @@ import {
 } from './codex-session-root-dedup'
 import {
   createAntigravityWorkspaceResolver,
+  readOptionalAntigravityHistoryFile,
   type AntigravityWorkspaceResolver
 } from './session-scanner-antigravity-history'
 import { antigravityHistoryPathForBrainDir } from './session-scanner-antigravity-paths'
@@ -39,6 +39,14 @@ import type {
   SessionParseResult
 } from './session-scanner-types'
 import { clampPositiveInteger, errorMessage } from './session-scanner-values'
+import {
+  isOpenCodeSqliteScanTerminatedError,
+  OpenCodeSqliteScanContext
+} from './session-scanner-opencode-sqlite-scan-context'
+import { recordOpenCodeSqliteScanOutcome } from './session-scanner-opencode-sqlite-scan-outcome'
+import { OpenCodeSqliteCandidatePhase } from './session-scanner-opencode-sqlite-candidate-phase'
+import { withSessionExecutionHost } from './session-scanner-execution-host'
+import { mergeSessions } from './session-scanner-session-merge'
 
 const DEFAULT_LIMIT = 1000
 const DEFAULT_SCAN_LIMIT_PER_AGENT = 1000
@@ -63,107 +71,111 @@ export async function scanAiVaultSessions(
   // "one core pegged" reports need to show whether transcript scanning is the
   // subsystem burning CPU, and how much of each scan the cache absorbed.
   return withSpan('aiVault.scan', async (span) => {
-    const limit = clampPositiveInteger(options.limit, DEFAULT_LIMIT)
-    const limitPerAgent = clampPositiveInteger(options.limitPerAgent, DEFAULT_SCAN_LIMIT_PER_AGENT)
-    const platform = options.platform ?? process.platform
-    const executionHostId = options.executionHostId ?? LOCAL_EXECUTION_HOST_ID
-    const issues: AiVaultScanIssue[] = []
-    const parseStats = createSessionParseStats()
-    const antigravityWorkspaceResolver = createAntigravityWorkspaceResolver(readOptionalTextFile)
-    // Why: persisted entries must be seeded before any candidate is parsed, or
-    // the cold scan gains nothing from the cache file (#9210).
-    await ensureSessionParseCacheLoaded()
-    const discoveries = await discoverAiVaultSessionSources({ options, limitPerAgent, issues })
+    const opencodeSqliteScanContext = new OpenCodeSqliteScanContext()
+    try {
+      const limit = clampPositiveInteger(options.limit, DEFAULT_LIMIT)
+      const limitPerAgent = clampPositiveInteger(
+        options.limitPerAgent,
+        DEFAULT_SCAN_LIMIT_PER_AGENT
+      )
+      const platform = options.platform ?? process.platform
+      const executionHostId = options.executionHostId ?? LOCAL_EXECUTION_HOST_ID
+      const issues: AiVaultScanIssue[] = []
+      const parseStats = createSessionParseStats()
+      const antigravityWorkspaceResolver = createAntigravityWorkspaceResolver(
+        readOptionalAntigravityHistoryFile
+      )
+      // Why: persisted entries must be seeded before any candidate is parsed, or
+      // the cold scan gains nothing from the cache file (#9210).
+      await ensureSessionParseCacheLoaded()
+      const discoveries = await discoverAiVaultSessionSources({
+        options,
+        limitPerAgent,
+        issues,
+        opencodeSqliteScanContext
+      })
 
-    const candidates = dedupeCodexRolloutFileAliases(
-      discoveries
-        .flatMap((discovery) =>
-          discovery.files.map(
-            (file): SessionFileCandidate => ({
-              agent: discovery.agent,
-              file,
-              codexHome:
-                discovery.agent === 'codex'
-                  ? codexHomeForSessionsDir(
-                      discovery.rootDir,
-                      options.defaultCodexHomeDir ?? DEFAULT_CODEX_HOME_DIR
-                    )
-                  : null,
-              antigravityHistoryPath:
-                discovery.agent === 'antigravity'
-                  ? antigravityHistoryPathForBrainDir(discovery.rootDir)
-                  : undefined
-            })
+      const candidates = dedupeCodexRolloutFileAliases(
+        discoveries
+          .flatMap((discovery) =>
+            discovery.files.map(
+              (file): SessionFileCandidate => ({
+                agent: discovery.agent,
+                file,
+                codexHome:
+                  discovery.agent === 'codex'
+                    ? codexHomeForSessionsDir(
+                        discovery.rootDir,
+                        options.defaultCodexHomeDir ?? DEFAULT_CODEX_HOME_DIR
+                      )
+                    : null,
+                antigravityHistoryPath:
+                  discovery.agent === 'antigravity'
+                    ? antigravityHistoryPathForBrainDir(discovery.rootDir)
+                    : undefined
+              })
+            )
           )
-        )
-        .sort((left, right) => right.file.mtimeMs - left.file.mtimeMs),
-      {
-        isCodex: (candidate) => candidate.agent === 'codex',
-        getFilePath: (candidate) => candidate.file.path,
-        getCodexHome: (candidate) => candidate.codexHome,
-        getHardlinkIdentity: (candidate) => codexRolloutHardlinkIdentity(candidate.file)
+          .sort((left, right) => right.file.mtimeMs - left.file.mtimeMs),
+        {
+          isCodex: (candidate) => candidate.agent === 'codex',
+          getFilePath: (candidate) => candidate.file.path,
+          getCodexHome: (candidate) => candidate.codexHome,
+          getHardlinkIdentity: (candidate) => codexRolloutHardlinkIdentity(candidate.file)
+        }
+      )
+
+      const parsedSessions = await parseSessionCandidates({
+        candidates,
+        limit,
+        platform,
+        executionHostId,
+        issues,
+        parseStats,
+        antigravityWorkspaceResolver,
+        opencodeSqliteScanContext
+      })
+      opencodeSqliteScanContext.disarmDeadline()
+
+      const cappedSessions = dedupeCodexSessionsBySessionId(parsedSessions)
+        .sort((left, right) => sessionSortTime(right) - sessionSortTime(left))
+        .slice(0, limit)
+
+      const scopeSessions = await scanInScopeSessions({
+        discoveries,
+        scopePaths: options.scopePaths ?? [],
+        alreadyParsedFilePaths: new Set(cappedSessions.map((session) => session.filePath)),
+        platform,
+        executionHostId,
+        issues,
+        parseStats
+      })
+
+      span.setAttribute('candidates', candidates.length)
+      span.setAttribute('reused', parseStats.reused)
+      span.setAttribute('incremental', parseStats.incremental)
+      span.setAttribute('fullParses', parseStats.fullParses)
+      span.setAttribute('bytesRead', parseStats.bytesRead)
+      recordOpenCodeSqliteScanOutcome({
+        candidates,
+        context: opencodeSqliteScanContext,
+        discoveries,
+        issues,
+        span
+      })
+      span.setAttribute('issues', issues.length)
+
+      scheduleSessionParseCachePersist(parseStats)
+
+      return {
+        sessions: mergeSessions(cappedSessions, scopeSessions),
+        issues: issues.map((issue) => ({ executionHostId, ...issue })),
+        scannedAt: new Date().toISOString()
       }
-    )
-
-    const parsedSessions = await parseSessionCandidates({
-      candidates,
-      limit,
-      platform,
-      executionHostId,
-      issues,
-      parseStats,
-      antigravityWorkspaceResolver
-    })
-
-    const cappedSessions = dedupeCodexSessionsBySessionId(parsedSessions)
-      .sort((left, right) => sessionSortTime(right) - sessionSortTime(left))
-      .slice(0, limit)
-
-    const scopeSessions = await scanInScopeSessions({
-      discoveries,
-      scopePaths: options.scopePaths ?? [],
-      alreadyParsedFilePaths: new Set(cappedSessions.map((session) => session.filePath)),
-      platform,
-      executionHostId,
-      issues,
-      parseStats
-    })
-
-    span.setAttribute('candidates', candidates.length)
-    span.setAttribute('reused', parseStats.reused)
-    span.setAttribute('incremental', parseStats.incremental)
-    span.setAttribute('fullParses', parseStats.fullParses)
-    span.setAttribute('bytesRead', parseStats.bytesRead)
-    span.setAttribute('issues', issues.length)
-
-    scheduleSessionParseCachePersist(parseStats)
-
-    return {
-      sessions: mergeSessions(cappedSessions, scopeSessions),
-      issues: issues.map((issue) => ({ executionHostId, ...issue })),
-      scannedAt: new Date().toISOString()
+    } finally {
+      opencodeSqliteScanContext.dispose()
     }
   })
-}
-
-// In-scope sessions are guaranteed regardless of the recency cap, so the global
-// (already capped) result and the scope result are unioned and de-duplicated by
-// session id, then re-sorted DESC.
-function mergeSessions(
-  cappedSessions: AiVaultSession[],
-  scopeSessions: AiVaultSession[]
-): AiVaultSession[] {
-  if (scopeSessions.length === 0) {
-    return cappedSessions
-  }
-  const byId = new Map<string, AiVaultSession>()
-  for (const session of cappedSessions) {
-    byId.set(session.id, session)
-  }
-  for (const session of scopeSessions) {
-    byId.set(session.id, session)
-  }
-  return [...byId.values()].sort((left, right) => sessionSortTime(right) - sessionSortTime(left))
 }
 
 async function scanInScopeSessions(args: {
@@ -213,9 +225,14 @@ async function parseSessionCandidates(args: {
   issues: AiVaultScanIssue[]
   parseStats: SessionParseStats
   antigravityWorkspaceResolver?: AntigravityWorkspaceResolver
+  opencodeSqliteScanContext?: OpenCodeSqliteScanContext
 }): Promise<AiVaultSession[]> {
   const sessions: AiVaultSession[] = []
   let index = 0
+  const opencodePhase = new OpenCodeSqliteCandidatePhase(
+    args.candidates,
+    args.opencodeSqliteScanContext
+  )
 
   while (index < args.candidates.length) {
     if (canStopParsingSessions(sessions, args.limit, args.candidates[index]?.file.mtimeMs)) {
@@ -226,17 +243,20 @@ async function parseSessionCandidates(args: {
     const needed = Math.max(args.limit - sessions.length, 1)
     const batchSize = Math.min(SESSION_PARSE_CONCURRENCY, needed, remaining)
     const batch = args.candidates.slice(index, index + batchSize)
+    const parseableBatch = opencodePhase.prepareBatch(batch)
     const results = await Promise.all(
-      batch.map((candidate) =>
+      parseableBatch.map((candidate) =>
         parseSessionCandidate(
           candidate,
           args.platform,
           args.executionHostId,
           args.parseStats,
-          args.antigravityWorkspaceResolver
+          args.antigravityWorkspaceResolver,
+          args.opencodeSqliteScanContext
         )
       )
     )
+    opencodePhase.completeBatch()
 
     for (const result of results) {
       if (result.issue) {
@@ -255,6 +275,7 @@ async function parseSessionCandidates(args: {
     index += batchSize
   }
 
+  opencodePhase.finish()
   return sessions
 }
 
@@ -263,10 +284,16 @@ async function parseSessionCandidate(
   platform: NodeJS.Platform,
   executionHostId: ExecutionHostId,
   parseStats: SessionParseStats,
-  antigravityWorkspaceResolver?: AntigravityWorkspaceResolver
+  antigravityWorkspaceResolver?: AntigravityWorkspaceResolver,
+  opencodeSqliteScanContext?: OpenCodeSqliteScanContext
 ): Promise<SessionParseResult> {
   try {
-    let session = await parseAgentSessionFileCached(candidate, platform, parseStats)
+    let session = await parseAgentSessionFileCached(
+      candidate,
+      platform,
+      parseStats,
+      opencodeSqliteScanContext
+    )
     if (session && candidate.antigravityHistoryPath && antigravityWorkspaceResolver) {
       session = await antigravityWorkspaceResolver.enrich(session, candidate.antigravityHistoryPath)
     }
@@ -275,6 +302,9 @@ async function parseSessionCandidate(
       issue: null
     }
   } catch (err) {
+    if (isOpenCodeSqliteScanTerminatedError(err)) {
+      return { session: null, issue: null }
+    }
     return {
       session: null,
       issue: {
@@ -284,28 +314,6 @@ async function parseSessionCandidate(
         message: errorMessage(err)
       }
     }
-  }
-}
-
-async function readOptionalTextFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, 'utf-8')
-  } catch {
-    return null
-  }
-}
-
-function withSessionExecutionHost(
-  session: AiVaultSession,
-  executionHostId: ExecutionHostId
-): AiVaultSession {
-  if (session.executionHostId === executionHostId) {
-    return session
-  }
-  return {
-    ...session,
-    executionHostId,
-    id: `${executionHostId}:${session.agent}:${session.sessionId}:${session.filePath}`
   }
 }
 

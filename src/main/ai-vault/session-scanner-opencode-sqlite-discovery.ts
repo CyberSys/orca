@@ -4,6 +4,7 @@ import { discoverFiles } from './session-scanner-discovery'
 import { splitOpenCodeSqliteCandidate } from './session-scanner-opencode-sqlite-paths'
 import { listOpenCodeSqliteSessionsViaWorker } from './session-scanner-opencode-sqlite-worker-spawn'
 import type { FileWithMtime, SessionFileDiscovery } from './session-scanner-types'
+import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
 
 // Why: keep the SQLite discovery + dedup layer separate from the parser so
 // each file stays under the max-lines lint rule and the discovery layer can
@@ -36,6 +37,7 @@ function sessionIdFromLegacyFilePath(filePath: string): string {
  * @returns A `SessionFileDiscovery` with deduplicated file entries.
  */
 export async function discoverOpenCodeSessions(args: {
+  context: OpenCodeSqliteScanContext
   storageDir: string
   dbPaths: readonly string[]
   limitPerAgent: number
@@ -52,6 +54,7 @@ export async function discoverOpenCodeSessions(args: {
     // Why (#8864): the SQLite list leg runs on a worker thread; only this leg
     // moves off the main thread, the filesystem scan stays inline.
     listOpenCodeSqliteSessionsViaWorker({
+      context: args.context,
       dbPaths: args.dbPaths,
       limit: args.limitPerAgent,
       issues: args.issues

@@ -14,10 +14,11 @@ import {
 } from './session-scanner-secondary-parsers'
 import { countSubagentTranscripts } from './session-scanner-subagent-transcripts'
 import type { ResumableSessionParseState, SessionFileCandidate } from './session-scanner-types'
+import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
 
 // Sized past the default recency cap (1000) plus the in-scope cap (2000) so a
 // full steady-state result set stays resident between forced rescans.
-const MAX_CACHE_ENTRIES = 4096
+export const MAX_CACHE_ENTRIES = 4096
 
 const NEWLINE_BYTE = 0x0a
 const CARRIAGE_RETURN_BYTE = 0x0d
@@ -166,7 +167,8 @@ function storeEntry(path: string, entry: SessionParseCacheEntry): void {
 export async function parseAgentSessionFileCached(
   candidate: SessionFileCandidate,
   platform: NodeJS.Platform,
-  stats?: SessionParseStats
+  stats?: SessionParseStats,
+  opencodeSqliteScanContext?: OpenCodeSqliteScanContext
 ): Promise<AiVaultSession | null> {
   const { file } = candidate
   const entry = cache.get(file.path)
@@ -211,7 +213,7 @@ export async function parseAgentSessionFileCached(
     stats.fullParses++
     stats.bytesRead += file.sizeBytes ?? 0
   }
-  const session = await parseAgentSessionFile(candidate, platform)
+  const session = await parseAgentSessionFile(candidate, platform, opencodeSqliteScanContext)
   storeEntry(file.path, {
     mtimeMs: file.mtimeMs,
     sizeBytes: file.sizeBytes ?? null,

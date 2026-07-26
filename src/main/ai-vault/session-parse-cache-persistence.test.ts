@@ -7,6 +7,7 @@ import {
   readdir,
   rm,
   stat,
+  truncate,
   utimes,
   writeFile
 } from 'node:fs/promises'
@@ -19,7 +20,8 @@ import {
   flushSessionParseCachePersistForTests,
   initSessionParseCachePersistence,
   resetSessionParseCachePersistenceForTests,
-  scheduleSessionParseCachePersist
+  scheduleSessionParseCachePersist,
+  SESSION_PARSE_CACHE_MAX_BYTES
 } from './session-parse-cache-persistence'
 import { scanAiVaultSessions } from './session-scanner'
 import {
@@ -164,6 +166,50 @@ describe('session parse cache persistence', () => {
     initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
 
     const transcript = await writeTranscript(root)
+    const stats = await coldParseStats(transcript)
+    expect(stats.fullParses).toBe(1)
+    expect(stats.reused).toBe(0)
+  })
+
+  it('rejects an oversized sparse cache before reading its contents', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    await writeFile(cacheFile, '')
+    await truncate(cacheFile, SESSION_PARSE_CACHE_MAX_BYTES + 1)
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+
+    const transcript = await writeTranscript(root)
+    const stats = await coldParseStats(transcript)
+    expect(stats.fullParses).toBe(1)
+    expect(stats.reused).toBe(0)
+  })
+
+  it('rejects structurally excessive JSON before parsing the cache graph', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    const transcript = await writeTranscript(root)
+    const candidate = await claudeCandidate(transcript)
+    const structuralNoise = Array.from({ length: 1_000_000 }, () => null)
+    await writeFile(
+      cacheFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        appVersion: APP_VERSION,
+        entries: [
+          [
+            transcript,
+            {
+              mtimeMs: candidate.file.mtimeMs,
+              sizeBytes: candidate.file.sizeBytes,
+              platform: process.platform,
+              session: { structuralNoise }
+            }
+          ]
+        ]
+      })
+    )
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+
     const stats = await coldParseStats(transcript)
     expect(stats.fullParses).toBe(1)
     expect(stats.reused).toBe(0)
@@ -359,6 +405,100 @@ describe('session parse cache persistence', () => {
     await parseAgentSessionFileCached(candidate, process.platform, stats)
     expect(stats.reused).toBe(1)
     expect(stats.fullParses).toBe(0)
+  })
+
+  it('rejects malformed entries even when they fall outside the retained tail', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    const transcript = await writeTranscript(root)
+    const candidate = await claudeCandidate(transcript)
+    const validEntry: PersistedSessionParseCacheEntry = {
+      mtimeMs: candidate.file.mtimeMs,
+      sizeBytes: candidate.file.sizeBytes ?? null,
+      platform: process.platform,
+      session: null
+    }
+    const entries: unknown[] = [
+      ['discarded-malformed'],
+      ...Array.from({ length: 4097 }, (_, index) => [`/fake-${index}`, validEntry]),
+      [transcript, validEntry],
+      [transcript, { ...validEntry, mtimeMs: candidate.file.mtimeMs + 1 }]
+    ]
+    await writeFile(
+      cacheFile,
+      JSON.stringify({ schemaVersion: 1, appVersion: APP_VERSION, entries })
+    )
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+
+    const stats = await coldParseStats(transcript)
+    expect(stats.fullParses).toBe(1)
+    expect(stats.reused).toBe(0)
+  })
+
+  it('keeps the newest persisted entry when a path is duplicated', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    const transcript = await writeTranscript(root)
+    const candidate = await claudeCandidate(transcript)
+    const entry: PersistedSessionParseCacheEntry = {
+      mtimeMs: candidate.file.mtimeMs,
+      sizeBytes: candidate.file.sizeBytes ?? null,
+      platform: process.platform,
+      session: null
+    }
+    await writeFile(
+      cacheFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        appVersion: APP_VERSION,
+        entries: [
+          [transcript, { ...entry, mtimeMs: entry.mtimeMs - 1 }],
+          [transcript, entry]
+        ]
+      })
+    )
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+
+    const stats = await coldParseStats(transcript)
+    expect(stats.reused).toBe(1)
+    expect(stats.fullParses).toBe(0)
+  })
+
+  it('leaves the previous snapshot intact when writer structure admission fails', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+    const transcript = await writeTranscript(root)
+    await parseAndPersist(transcript)
+    const previousSnapshot = await readFile(cacheFile, 'utf8')
+
+    let deeplyNested: unknown = null
+    for (let depth = 0; depth < 40; depth += 1) {
+      deeplyNested = { next: deeplyNested }
+    }
+    seedSessionParseCache([
+      [
+        '/foreign/deep-session.jsonl',
+        {
+          mtimeMs: 1,
+          sizeBytes: 1,
+          platform: process.platform,
+          session: deeplyNested as PersistedSessionParseCacheEntry['session']
+        }
+      ]
+    ])
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    scheduleSessionParseCachePersist({
+      reused: 0,
+      incremental: 0,
+      fullParses: 1,
+      bytesRead: 1
+    })
+    await flushSessionParseCachePersistForTests()
+
+    expect(await readFile(cacheFile, 'utf8')).toBe(previousSnapshot)
+    expect(debugSpy).toHaveBeenCalled()
+    debugSpy.mockRestore()
   })
 
   it('a failing rename cleans up its temp file and keeps the previous snapshot usable', async () => {
