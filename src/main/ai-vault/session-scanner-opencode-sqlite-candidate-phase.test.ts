@@ -40,15 +40,18 @@ describe('OpenCodeSqliteCandidatePhase', () => {
     }
   })
 
-  it('disarms after the last SQLite batch or an early parser stop', async () => {
+  it('disarms after the last SQLite promise without awaiting an unrelated parser', async () => {
     vi.useFakeTimers()
     const sqlite = candidate('/data/opencode.db#session')
+    const legacy = candidate('/legacy/session.json')
     const completedContext = new OpenCodeSqliteScanContext(1)
     const stoppedContext = new OpenCodeSqliteScanContext(1)
     try {
-      const completed = new OpenCodeSqliteCandidatePhase([sqlite], completedContext)
-      expect(completed.prepareBatch([sqlite])).toEqual([sqlite])
-      completed.completeBatch()
+      const completed = new OpenCodeSqliteCandidatePhase([sqlite, legacy], completedContext)
+      const batch = completed.prepareBatch([sqlite, legacy])
+      const neverSettles = new Promise<void>(() => {})
+      completed.trackBatch(batch, [Promise.resolve(), neverSettles])
+      await Promise.resolve()
 
       const stopped = new OpenCodeSqliteCandidatePhase([sqlite], stoppedContext)
       stopped.finish()

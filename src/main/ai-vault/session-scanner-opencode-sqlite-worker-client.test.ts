@@ -189,6 +189,9 @@ describe('OpenCodeSqliteWorkerClient', () => {
     // Exactly one respawn; the queued call drains on the new worker.
     expect(workers).toHaveLength(2)
     const respawned = workers[1]!
+    workers[0]!.emit('error', new Error('late old-worker fault'))
+    workers[0]!.emit('message', { id: respawned.lastId(), ok: true, value: 'stale' })
+    expect(workers).toHaveLength(2)
     respawned.emit('message', { id: respawned.lastId(), ok: true, value: 'B' })
     await expect(queued).resolves.toBe('B')
   })
@@ -351,6 +354,24 @@ describe('OpenCodeSqliteWorkerClient', () => {
     ).rejects.toThrow(/background scanner could not start/)
   })
 
+  it('rejects already-aborted work without spawning a worker', async () => {
+    const workers: FakeWorker[] = []
+    const client = new OpenCodeSqliteWorkerClient({ workerFactory: makeFactory(workers), log() {} })
+    const abortedContext = new OpenCodeSqliteScanContext()
+    abortedContext.dispose()
+
+    await expect(
+      client.parse({
+        context: abortedContext,
+        dbPath: '/db#a',
+        sessionId: 'a',
+        platform: 'darwin'
+      })
+    ).rejects.toThrow(/scan ended/)
+    expect(workers).toEqual([])
+    expect(abortedContext.metrics().workOmitted).toBe(true)
+  })
+
   it('stops respawning after the consecutive-death cap and fails the rest to issues', async () => {
     const workers: FakeWorker[] = []
     const client = new OpenCodeSqliteWorkerClient({ workerFactory: makeFactory(workers), log() {} })
@@ -505,6 +526,19 @@ describe('OpenCodeSqliteWorkerClient', () => {
         await rejection
         expect(addListener).toHaveBeenCalledTimes(index + 1)
         expect(removeListener).toHaveBeenCalledTimes(index + 1)
+
+        const interleaved = client.parse({
+          context: otherContext,
+          dbPath: `/db#b${index}`,
+          sessionId: `b${index}`,
+          platform: 'darwin'
+        })
+        workers.at(-1)!.emit('message', {
+          id: workers.at(-1)!.lastId(),
+          ok: true,
+          value: `B${index}`
+        })
+        await expect(interleaved).resolves.toBe(`B${index}`)
       }
 
       const third = client.parse({

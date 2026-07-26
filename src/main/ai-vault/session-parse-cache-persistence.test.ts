@@ -97,6 +97,14 @@ function assistantRecord(index: number, text: string): string {
   })
 }
 
+function nestedUnknownSession(depth: number): PersistedSessionParseCacheEntry['session'] {
+  let value: unknown = null
+  for (let index = 0; index < depth; index += 1) {
+    value = { next: value }
+  }
+  return value as PersistedSessionParseCacheEntry['session']
+}
+
 async function writeTranscript(root: string): Promise<string> {
   const path = join(root, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl')
   await writeFile(path, `${userRecord(0, 'first question')}\n${assistantRecord(1, 'answer')}\n`)
@@ -184,6 +192,39 @@ describe('session parse cache persistence', () => {
     expect(stats.reused).toBe(0)
   })
 
+  it('accepts an exact-byte-cap cache file', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    const transcript = await writeTranscript(root)
+    const candidate = await claudeCandidate(transcript)
+    const file = {
+      schemaVersion: 1,
+      appVersion: APP_VERSION,
+      entries: [
+        [
+          transcript,
+          {
+            mtimeMs: candidate.file.mtimeMs,
+            sizeBytes: candidate.file.sizeBytes,
+            platform: process.platform,
+            session: null
+          }
+        ]
+      ],
+      padding: ''
+    }
+    const base = JSON.stringify(file)
+    file.padding = 'x'.repeat(SESSION_PARSE_CACHE_MAX_BYTES - Buffer.byteLength(base))
+    const payload = JSON.stringify(file)
+    expect(Buffer.byteLength(payload)).toBe(SESSION_PARSE_CACHE_MAX_BYTES)
+    await writeFile(cacheFile, payload)
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+
+    const stats = await coldParseStats(transcript)
+    expect(stats.reused).toBe(1)
+    expect(stats.fullParses).toBe(0)
+  })
+
   it('rejects structurally excessive JSON before parsing the cache graph', async () => {
     const root = await makeTempDir()
     const cacheFile = join(root, 'session-parse-cache.json')
@@ -213,6 +254,43 @@ describe('session parse cache persistence', () => {
     const stats = await coldParseStats(transcript)
     expect(stats.fullParses).toBe(1)
     expect(stats.reused).toBe(0)
+  })
+
+  it('accepts nesting depth 32 and rejects depth 33 through the real loader', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    const transcript = await writeTranscript(root)
+    const candidate = await claudeCandidate(transcript)
+    const writeNestedCache = async (sessionDepth: number): Promise<void> => {
+      await writeFile(
+        cacheFile,
+        JSON.stringify({
+          schemaVersion: 1,
+          appVersion: APP_VERSION,
+          entries: [
+            [
+              transcript,
+              {
+                mtimeMs: candidate.file.mtimeMs,
+                sizeBytes: candidate.file.sizeBytes,
+                platform: process.platform,
+                session: nestedUnknownSession(sessionDepth)
+              }
+            ]
+          ]
+        })
+      )
+    }
+
+    await writeNestedCache(28)
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+    expect((await coldParseStats(transcript)).reused).toBe(1)
+
+    simulateRestart(cacheFile)
+    await writeNestedCache(29)
+    const rejectedStats = await coldParseStats(transcript)
+    expect(rejectedStats.reused).toBe(0)
+    expect(rejectedStats.fullParses).toBe(1)
   })
 
   it('ignores a cache file with a mismatched schemaVersion', async () => {
@@ -407,6 +485,41 @@ describe('session parse cache persistence', () => {
     expect(stats.fullParses).toBe(0)
   })
 
+  it('round-trips a full 4,096-entry writer snapshot', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    const transcript = await writeTranscript(root)
+    const candidate = await claudeCandidate(transcript)
+    const entry: PersistedSessionParseCacheEntry = {
+      mtimeMs: candidate.file.mtimeMs,
+      sizeBytes: candidate.file.sizeBytes ?? null,
+      platform: process.platform,
+      session: null
+    }
+    seedSessionParseCache([
+      ...Array.from({ length: 4095 }, (_, index): [string, PersistedSessionParseCacheEntry] => [
+        `/fake-${index}`,
+        entry
+      ]),
+      [transcript, entry]
+    ])
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+    scheduleSessionParseCachePersist({
+      reused: 0,
+      incremental: 0,
+      fullParses: 1,
+      bytesRead: 1
+    })
+    await flushSessionParseCachePersistForTests()
+
+    simulateRestart(cacheFile)
+    await ensureSessionParseCacheLoaded()
+    const stats = createSessionParseStats()
+    await parseAgentSessionFileCached(candidate, process.platform, stats)
+    expect(stats.reused).toBe(1)
+    expect(JSON.parse(await readFile(cacheFile, 'utf8')).entries).toHaveLength(4096)
+  })
+
   it('rejects malformed entries even when they fall outside the retained tail', async () => {
     const root = await makeTempDir()
     const cacheFile = join(root, 'session-parse-cache.json')
@@ -484,6 +597,39 @@ describe('session parse cache persistence', () => {
           sizeBytes: 1,
           platform: process.platform,
           session: deeplyNested as PersistedSessionParseCacheEntry['session']
+        }
+      ]
+    ])
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    scheduleSessionParseCachePersist({
+      reused: 0,
+      incremental: 0,
+      fullParses: 1,
+      bytesRead: 1
+    })
+    await flushSessionParseCachePersistForTests()
+
+    expect(await readFile(cacheFile, 'utf8')).toBe(previousSnapshot)
+    expect(debugSpy).toHaveBeenCalled()
+    debugSpy.mockRestore()
+  })
+
+  it('leaves the previous snapshot intact when writer byte admission fails', async () => {
+    const root = await makeTempDir()
+    const cacheFile = join(root, 'session-parse-cache.json')
+    initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
+    const transcript = await writeTranscript(root)
+    await parseAndPersist(transcript)
+    const previousSnapshot = await readFile(cacheFile, 'utf8')
+
+    seedSessionParseCache([
+      [
+        'x'.repeat(SESSION_PARSE_CACHE_MAX_BYTES),
+        {
+          mtimeMs: 1,
+          sizeBytes: 1,
+          platform: process.platform,
+          session: null
         }
       ]
     ])

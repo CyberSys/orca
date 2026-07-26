@@ -5,6 +5,31 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { scanAiVaultSessions } from './session-scanner'
 import Database from '../sqlite/sync-database'
+import type { AiVaultScanIssue, AiVaultSession } from '../../shared/ai-vault-types'
+import type { SessionFileCandidate } from './session-scanner-types'
+import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
+import { buildOpenCodeSqliteCandidatePath } from './session-scanner-opencode-sqlite-paths'
+
+type WorkerListArgs = {
+  context: OpenCodeSqliteScanContext
+  dbPaths: readonly string[]
+  limit: number
+  issues: AiVaultScanIssue[]
+}
+
+type WorkerParseArgs = {
+  context: OpenCodeSqliteScanContext
+  dbPath: string
+  sessionId: string
+  platform: NodeJS.Platform
+}
+
+const workerMock = vi.hoisted(() => ({
+  listCalls: 0,
+  parseCalls: 0,
+  listOverride: null as null | ((args: WorkerListArgs) => Promise<SessionFileCandidate[]>),
+  parseOverride: null as null | ((args: WorkerParseArgs) => Promise<AiVaultSession | null>)
+}))
 
 // Why: this source-level integration suite has no built worker entry. Keep its
 // SQLite fixtures inline explicitly; production fails closed if the bundle is absent.
@@ -14,8 +39,14 @@ vi.mock('./session-scanner-opencode-sqlite-worker-spawn', async () => {
     import('./session-scanner-opencode-sqlite')
   ])
   return {
-    listOpenCodeSqliteSessionsViaWorker: listOpenCodeSqliteSessions,
-    parseOpenCodeSqliteSessionViaWorker: parseOpenCodeSqliteSession
+    listOpenCodeSqliteSessionsViaWorker: (args: WorkerListArgs) => {
+      workerMock.listCalls += 1
+      return workerMock.listOverride?.(args) ?? listOpenCodeSqliteSessions(args)
+    },
+    parseOpenCodeSqliteSessionViaWorker: (args: WorkerParseArgs) => {
+      workerMock.parseCalls += 1
+      return workerMock.parseOverride?.(args) ?? parseOpenCodeSqliteSession(args)
+    }
   }
 })
 
@@ -23,6 +54,10 @@ let tempRoots: string[] = []
 let tempDbDirs: string[] = []
 
 afterEach(async () => {
+  workerMock.listCalls = 0
+  workerMock.parseCalls = 0
+  workerMock.listOverride = null
+  workerMock.parseOverride = null
   await Promise.all(tempRoots.map((root) => rm(root, { recursive: true, force: true })))
   for (const dir of tempDbDirs) {
     rmSync(dir, { recursive: true, force: true })
@@ -104,6 +139,69 @@ function applyOpenCodeSchema(db: Database.Database): void {
 }
 
 describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', () => {
+  it('stops native and WSL SQLite parsing at one scan deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-deadline-'))
+      tempRoots.push(root)
+      const roots = isolatedScanRoots(root)
+      const nativeDataDir = join(root, 'native-opencode')
+      const wslHome = join(root, 'wsl-home')
+      await mkdir(join(nativeDataDir, 'storage'), { recursive: true })
+      await mkdir(join(wslHome, '.local', 'share', 'opencode'), { recursive: true })
+      await writeFile(join(nativeDataDir, 'opencode.db'), '')
+      await writeFile(join(wslHome, '.local', 'share', 'opencode', 'opencode.db'), '')
+
+      workerMock.listOverride = async (args) =>
+        args.dbPaths.flatMap((dbPath, sourceIndex) =>
+          Array.from({ length: 120 }, (_, candidateIndex) => ({
+            agent: 'opencode' as const,
+            codexHome: null,
+            file: {
+              path: buildOpenCodeSqliteCandidatePath(
+                dbPath,
+                `session-${sourceIndex}-${candidateIndex}`
+              ),
+              mtimeMs: 10_000 - candidateIndex,
+              modifiedAt: new Date(10_000 - candidateIndex).toISOString()
+            }
+          }))
+        )
+      workerMock.parseOverride = (args) =>
+        new Promise((_, reject) => {
+          const rejectTerminated = (): void => {
+            args.context.markWorkOmitted()
+            reject(args.context.terminationError())
+          }
+          if (args.context.isTerminated) {
+            rejectTerminated()
+          } else {
+            args.context.signal.addEventListener('abort', rejectTerminated, { once: true })
+          }
+        })
+
+      const scan = scanAiVaultSessions({
+        ...roots,
+        opencodeStorageDir: join(nativeDataDir, 'storage'),
+        opencodeDbPaths: undefined,
+        wslHomeDirs: [wslHome],
+        limit: 500
+      })
+      await vi.waitFor(() => expect(workerMock.parseCalls).toBe(8))
+      await vi.advanceTimersByTimeAsync(45_000)
+      const result = await scan
+
+      expect(workerMock.listCalls).toBe(2)
+      expect(workerMock.parseCalls).toBe(8)
+      expect(result.sessions).toEqual([])
+      expect(
+        result.issues.filter((issue) => /OpenCode history was skipped/.test(issue.message))
+      ).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('discovers SQLite sessions next to a custom OpenCode storage directory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-custom-opencode-'))
     tempRoots.push(root)

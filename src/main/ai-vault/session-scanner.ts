@@ -244,19 +244,18 @@ async function parseSessionCandidates(args: {
     const batchSize = Math.min(SESSION_PARSE_CONCURRENCY, needed, remaining)
     const batch = args.candidates.slice(index, index + batchSize)
     const parseableBatch = opencodePhase.prepareBatch(batch)
-    const results = await Promise.all(
-      parseableBatch.map((candidate) =>
-        parseSessionCandidate(
-          candidate,
-          args.platform,
-          args.executionHostId,
-          args.parseStats,
-          args.antigravityWorkspaceResolver,
-          args.opencodeSqliteScanContext
-        )
+    const parsePromises = parseableBatch.map((candidate) =>
+      parseSessionCandidate(
+        candidate,
+        args.platform,
+        args.executionHostId,
+        args.parseStats,
+        args.antigravityWorkspaceResolver,
+        args.opencodeSqliteScanContext
       )
     )
-    opencodePhase.completeBatch()
+    opencodePhase.trackBatch(parseableBatch, parsePromises)
+    const results = await Promise.all(parsePromises)
 
     for (const result of results) {
       if (result.issue) {

@@ -32,10 +32,20 @@ export class OpenCodeSqliteCandidatePhase {
     })
   }
 
-  completeBatch(): void {
-    if (this.remainingCandidates === 0) {
-      this.context?.disarmDeadline()
+  trackBatch(
+    candidates: readonly SessionFileCandidate[],
+    promises: readonly Promise<unknown>[]
+  ): void {
+    if (this.remainingCandidates !== 0 || !this.context) {
+      return
     }
+    const sqlitePromises = promises.filter((_, index) =>
+      looksLikeOpenCodeSqliteCandidate(candidates[index]?.file.path ?? '')
+    )
+    if (sqlitePromises.length === 0) {
+      return
+    }
+    void Promise.allSettled(sqlitePromises).then(() => this.context?.disarmDeadline())
   }
 
   finish(): void {
