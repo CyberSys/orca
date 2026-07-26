@@ -71,6 +71,13 @@ class FakeWorker {
     }
     return last.id
   }
+
+  listenerCount(): number {
+    return Array.from(this.listeners.values()).reduce(
+      (total, listeners) => total + listeners.size,
+      0
+    )
+  }
 }
 
 function makeFactory(workers: FakeWorker[]): () => Worker {
@@ -88,6 +95,26 @@ function emitSettlementRaceEvent(worker: FakeWorker, event: 'message' | 'error' 
     worker.emit('error', new Error('worker race error'))
   } else {
     worker.emit('exit', 1)
+  }
+}
+
+function watchInternalSettlement(client: OpenCodeSqliteWorkerClient): {
+  callbackCount: () => number
+  settleCount: () => number
+} {
+  type Settle = (call: unknown, run: () => void) => void
+  const transport = (client as unknown as { transport: { settle: Settle } }).transport
+  const originalSettle = transport.settle.bind(transport)
+  let callbacks = 0
+  const settle = vi.spyOn(transport, 'settle').mockImplementation((call, run) => {
+    originalSettle(call, () => {
+      callbacks += 1
+      run()
+    })
+  })
+  return {
+    callbackCount: () => callbacks,
+    settleCount: () => settle.mock.calls.length
   }
 }
 
@@ -243,17 +270,12 @@ describe('OpenCodeSqliteWorkerClient', () => {
         workerFactory: makeFactory(workers),
         log() {}
       })
-      let activeSettlements = 0
-      const active = client
-        .parse({
-          context: expiringContext,
-          dbPath: '/db#a',
-          sessionId: 'a',
-          platform: 'darwin'
-        })
-        .finally(() => {
-          activeSettlements += 1
-        })
+      const active = client.parse({
+        context: expiringContext,
+        dbPath: '/db#a',
+        sessionId: 'a',
+        platform: 'darwin'
+      })
       const retained = client.parse({
         context: retainedContext,
         dbPath: '/db#b',
@@ -271,7 +293,6 @@ describe('OpenCodeSqliteWorkerClient', () => {
 
       await vi.advanceTimersByTimeAsync(10)
       await Promise.all([activeRejection, queuedRejection])
-      expect(activeSettlements).toBe(1)
       expect(workers[0]!.terminated).toBe(true)
       expect(workers).toHaveLength(2)
       workers[1]!.emit('message', { id: workers[1]!.lastId(), ok: true, value: 'B' })
@@ -288,7 +309,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
     }
   })
 
-  it('settles once when the per-call timeout wins a later context abort', async () => {
+  it('cleans up once when the per-call timeout wins a later context abort', async () => {
     vi.useFakeTimers()
     const timeoutContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
     try {
@@ -297,7 +318,9 @@ describe('OpenCodeSqliteWorkerClient', () => {
         workerFactory: makeFactory(workers),
         log() {}
       })
-      let settlements = 0
+      const settlement = watchInternalSettlement(client)
+      const addListener = vi.spyOn(timeoutContext.signal, 'addEventListener')
+      const removeListener = vi.spyOn(timeoutContext.signal, 'removeEventListener')
       const outcome = client
         .parse({
           context: timeoutContext,
@@ -306,15 +329,25 @@ describe('OpenCodeSqliteWorkerClient', () => {
           platform: 'darwin'
         })
         .catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
-        .finally(() => {
-          settlements += 1
-        })
 
+      expect(vi.getTimerCount()).toBe(2)
       await vi.advanceTimersByTimeAsync(PARSE_TIMEOUT_MS)
       await expect(outcome).resolves.toMatch(/timed out/)
+      expect(settlement.settleCount()).toBe(1)
+      expect(settlement.callbackCount()).toBe(1)
+      expect(addListener).toHaveBeenCalledTimes(1)
+      expect(removeListener).toHaveBeenCalledTimes(1)
+      expect(workers[0]!.listenerCount()).toBe(0)
+      expect(vi.getTimerCount()).toBe(1)
+
       timeoutContext.dispose()
+      emitSettlementRaceEvent(workers[0]!, 'message')
+      emitSettlementRaceEvent(workers[0]!, 'error')
+      emitSettlementRaceEvent(workers[0]!, 'exit')
       await vi.advanceTimersByTimeAsync(PARSE_TIMEOUT_MS)
-      expect(settlements).toBe(1)
+      expect(settlement.settleCount()).toBe(1)
+      expect(settlement.callbackCount()).toBe(1)
+      expect(vi.getTimerCount()).toBe(0)
     } finally {
       timeoutContext.dispose()
       vi.useRealTimers()
@@ -379,61 +412,105 @@ describe('OpenCodeSqliteWorkerClient', () => {
   })
 
   it.each(['message', 'error', 'exit'] as const)(
-    'settles once when context abort wins the %s race',
+    'cleans up once when context abort wins the %s and timeout races',
     async (event) => {
-      const workers: FakeWorker[] = []
-      const client = new OpenCodeSqliteWorkerClient({
-        workerFactory: makeFactory(workers),
-        log() {}
-      })
-      let settlements = 0
-      const parse = client
-        .parse({ context, dbPath: '/db#a', sessionId: 'a', platform: 'darwin' })
-        .finally(() => {
-          settlements += 1
+      vi.useFakeTimers()
+      const raceContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
+      try {
+        const workers: FakeWorker[] = []
+        const client = new OpenCodeSqliteWorkerClient({
+          workerFactory: makeFactory(workers),
+          log() {}
         })
-      const rejection = expect(parse).rejects.toThrow(/scan ended/)
+        const settlement = watchInternalSettlement(client)
+        const addListener = vi.spyOn(raceContext.signal, 'addEventListener')
+        const removeListener = vi.spyOn(raceContext.signal, 'removeEventListener')
+        const parse = client.parse({
+          context: raceContext,
+          dbPath: '/db#a',
+          sessionId: 'a',
+          platform: 'darwin'
+        })
+        const rejection = expect(parse).rejects.toThrow(/scan ended/)
 
-      context.dispose()
-      await rejection
-      emitSettlementRaceEvent(workers[0]!, event)
-      await Promise.resolve()
-      expect(settlements).toBe(1)
-      expect(workers[0]!.terminated).toBe(true)
+        expect(vi.getTimerCount()).toBe(2)
+        raceContext.dispose()
+        await rejection
+        expect(settlement.settleCount()).toBe(1)
+        expect(settlement.callbackCount()).toBe(1)
+        expect(addListener).toHaveBeenCalledTimes(1)
+        expect(removeListener).toHaveBeenCalledTimes(1)
+        expect(workers[0]!.listenerCount()).toBe(0)
+        expect(vi.getTimerCount()).toBe(0)
+
+        emitSettlementRaceEvent(workers[0]!, event)
+        await vi.advanceTimersByTimeAsync(PARSE_TIMEOUT_MS)
+        expect(settlement.settleCount()).toBe(1)
+        expect(settlement.callbackCount()).toBe(1)
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        raceContext.dispose()
+        vi.useRealTimers()
+      }
     }
   )
 
   it.each(['message', 'error', 'exit'] as const)(
-    'settles once when the worker %s wins the context-abort race',
+    'cleans up once when worker %s wins the context-abort race',
     async (event) => {
-      const workers: FakeWorker[] = []
-      const client = new OpenCodeSqliteWorkerClient({
-        workerFactory: makeFactory(workers),
-        log() {}
-      })
-      let settlements = 0
-      const outcome = client
-        .parse({ context, dbPath: '/db#a', sessionId: 'a', platform: 'darwin' })
-        .then(
-          (value) => ({ error: null, value }),
-          (error: unknown) => ({
-            error: error instanceof Error ? error.message : String(error),
-            value: null
-          })
-        )
-        .finally(() => {
-          settlements += 1
+      vi.useFakeTimers()
+      const raceContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
+      try {
+        const workers: FakeWorker[] = []
+        const client = new OpenCodeSqliteWorkerClient({
+          workerFactory: makeFactory(workers),
+          log() {}
         })
+        const settlement = watchInternalSettlement(client)
+        const addListener = vi.spyOn(raceContext.signal, 'addEventListener')
+        const removeListener = vi.spyOn(raceContext.signal, 'removeEventListener')
+        const outcome = client
+          .parse({
+            context: raceContext,
+            dbPath: '/db#a',
+            sessionId: 'a',
+            platform: 'darwin'
+          })
+          .then(
+            (value) => ({ error: null, value }),
+            (error: unknown) => ({
+              error: error instanceof Error ? error.message : String(error),
+              value: null
+            })
+          )
 
-      emitSettlementRaceEvent(workers[0]!, event)
-      const settled = await outcome
-      context.dispose()
-      await Promise.resolve()
-      expect(settlements).toBe(1)
-      if (event === 'message') {
-        expect(settled.error).toBeNull()
-      } else {
-        expect(settled.error).toEqual(expect.any(String))
+        expect(vi.getTimerCount()).toBe(2)
+        emitSettlementRaceEvent(workers[0]!, event)
+        const settled = await outcome
+        expect(settlement.settleCount()).toBe(1)
+        expect(settlement.callbackCount()).toBe(1)
+        expect(addListener).toHaveBeenCalledTimes(1)
+        expect(removeListener).toHaveBeenCalledTimes(1)
+        if (event === 'message') {
+          expect(settled.error).toBeNull()
+        } else {
+          expect(settled.error).toEqual(expect.any(String))
+        }
+
+        raceContext.dispose()
+        emitSettlementRaceEvent(workers[0]!, event)
+        if (event === 'message') {
+          expect(workers[0]!.listenerCount()).toBe(3)
+          expect(vi.getTimerCount()).toBe(1)
+          await vi.advanceTimersByTimeAsync(IDLE_TEARDOWN_MS)
+        }
+        expect(workers[0]!.listenerCount()).toBe(0)
+        expect(vi.getTimerCount()).toBe(0)
+        expect(settlement.settleCount()).toBe(1)
+        expect(settlement.callbackCount()).toBe(1)
+      } finally {
+        raceContext.dispose()
+        vi.useRealTimers()
       }
     }
   )
