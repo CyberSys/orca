@@ -144,6 +144,31 @@ export function seedSessionParseCache(
   }
 }
 
+function isEntryUnchanged(
+  entry: SessionParseCacheEntry | undefined,
+  candidate: SessionFileCandidate,
+  platform: NodeJS.Platform
+): boolean {
+  const { file } = candidate
+  return (
+    entry?.platform === platform &&
+    entry.mtimeMs === file.mtimeMs &&
+    (entry.sizeBytes === null || file.sizeBytes === undefined || entry.sizeBytes === file.sizeBytes)
+  )
+}
+
+/**
+ * Whether this candidate would be served straight from the in-memory cache, i.e.
+ * without touching its store. Callers that gate expensive parses (the OpenCode
+ * SQLite budget) use this so a spent budget never hides an already-parsed row.
+ */
+export function hasFreshSessionParseCacheEntry(
+  candidate: SessionFileCandidate,
+  platform: NodeJS.Platform
+): boolean {
+  return isEntryUnchanged(cache.get(candidate.file.path), candidate, platform)
+}
+
 function storeEntry(path: string, entry: SessionParseCacheEntry): void {
   cache.delete(path)
   cache.set(path, entry)
@@ -173,11 +198,7 @@ export async function parseAgentSessionFileCached(
   const { file } = candidate
   const entry = cache.get(file.path)
 
-  const unchanged =
-    entry?.platform === platform &&
-    entry.mtimeMs === file.mtimeMs &&
-    (entry.sizeBytes === null || file.sizeBytes === undefined || entry.sizeBytes === file.sizeBytes)
-  if (unchanged) {
+  if (entry !== undefined && isEntryUnchanged(entry, candidate, platform)) {
     if (stats) {
       stats.reused++
     }
@@ -208,11 +229,13 @@ export async function parseAgentSessionFileCached(
     return parsed.session
   }
 
+  // Counted after the parse: a cancelled OpenCode SQLite parse throws, and work
+  // that never happened must not show up as bytes this scan read.
+  const session = await parseAgentSessionFile(candidate, platform, opencodeSqliteScanContext)
   if (stats) {
     stats.fullParses++
     stats.bytesRead += file.sizeBytes ?? 0
   }
-  const session = await parseAgentSessionFile(candidate, platform, opencodeSqliteScanContext)
   storeEntry(file.path, {
     mtimeMs: file.mtimeMs,
     sizeBytes: file.sizeBytes ?? null,

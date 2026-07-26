@@ -5,9 +5,16 @@
 // degrades to today's cold-scan behavior.
 import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { assertJsonTextStructureWithinLimits } from '../../shared/json-text-structure-limit'
+import {
+  assertJsonTextStructureWithinLimits,
+  JsonTextStructureCapacityError,
+  type JsonTextStructureLimits
+} from '../../shared/json-text-structure-limit'
 import { readNodeFileWithinLimit } from '../../shared/node-bounded-file-reader'
-import { stringifyJsonWithinByteLimit } from '../../shared/node-bounded-json-stringify'
+import {
+  JsonStringifyByteLimitError,
+  stringifyJsonWithinByteLimit
+} from '../../shared/node-bounded-json-stringify'
 import {
   MAX_CACHE_ENTRIES,
   seedSessionParseCache,
@@ -116,7 +123,11 @@ async function loadPersistedEntries(current: SessionParseCachePersistenceOptions
     const entries = parsePersistedFile(JSON.parse(raw), current.appVersion)
     if (entries) {
       seedSessionParseCache(entries)
+      return
     }
+    // Unreadable content, not a missing file: drop it so it can't be re-read
+    // every launch while the next save replaces it.
+    await rm(current.filePath, { force: true }).catch(() => {})
   } catch {
     // Why: a missing/corrupt/foreign cache file must never fail the scan;
     // worst case is exactly today's cold scan.
@@ -204,19 +215,61 @@ function parsePersistedEntry(item: unknown): [string, PersistedSessionParseCache
   ]
 }
 
+// Why: hitting a capacity limit must degrade, not disable. Serializing the whole
+// snapshot and giving up would leave the old file in place and every later save
+// failing the same way, silently turning the #9210 cache back off for good. The
+// newest entries are the ones a restart actually reuses, so drop the oldest half
+// and retry until it fits.
+export function serializeSessionParseCacheSnapshot(
+  entries: [string, PersistedSessionParseCacheEntry][],
+  appVersion: string,
+  maxBytes: number = SESSION_PARSE_CACHE_MAX_BYTES,
+  jsonLimits: JsonTextStructureLimits = SESSION_PARSE_CACHE_JSON_LIMITS
+): string | null {
+  let retained = entries
+  while (retained.length > 0) {
+    try {
+      const { serialized } = stringifyJsonWithinByteLimit(
+        { schemaVersion: SCHEMA_VERSION, appVersion, entries: retained },
+        maxBytes
+      )
+      assertJsonTextStructureWithinLimits(serialized, jsonLimits)
+      if (retained.length !== entries.length) {
+        console.debug(
+          `[ai-vault] session parse cache trimmed to ${retained.length}/${entries.length} entries to fit its size limits`
+        )
+      }
+      return serialized
+    } catch (err) {
+      if (!isCapacityError(err)) {
+        throw err
+      }
+      // Snapshot order is oldest→newest; keep the newest half. At most
+      // log2(MAX_CACHE_ENTRIES) attempts, and only ever on the failure path.
+      retained = retained.slice(Math.ceil(retained.length / 2))
+    }
+  }
+  // Nothing fit, so a single entry — not aggregate pressure — is the problem.
+  // Trimming cannot help; keep the previous snapshot and say so.
+  console.debug('[ai-vault] session parse cache save skipped: no entry subset fits its size limits')
+  return null
+}
+
+function isCapacityError(err: unknown): boolean {
+  return err instanceof JsonStringifyByteLimitError || err instanceof JsonTextStructureCapacityError
+}
+
 async function persistSnapshot(current: SessionParseCachePersistenceOptions): Promise<void> {
   const directory = dirname(current.filePath)
   const tempPath = join(directory, `session-parse-cache-${process.pid}-${Date.now()}.tmp`)
   try {
-    const { serialized: payload } = stringifyJsonWithinByteLimit(
-      {
-        schemaVersion: SCHEMA_VERSION,
-        appVersion: current.appVersion,
-        entries: snapshotSessionParseCacheForPersistence()
-      },
-      SESSION_PARSE_CACHE_MAX_BYTES
+    const payload = serializeSessionParseCacheSnapshot(
+      snapshotSessionParseCacheForPersistence(),
+      current.appVersion
     )
-    assertJsonTextStructureWithinLimits(payload, SESSION_PARSE_CACHE_JSON_LIMITS)
+    if (payload === null) {
+      return
+    }
     await mkdir(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
     await writeFile(tempPath, payload, { mode: PRIVATE_FILE_MODE })
     // Atomic on POSIX; on Windows a rename racing an open handle fails and is

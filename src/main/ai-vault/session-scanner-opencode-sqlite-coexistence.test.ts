@@ -2,8 +2,9 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { scanAiVaultSessions } from './session-scanner'
+import { resetOpenCodeSqliteScanCooldownForTests } from './session-scanner-opencode-sqlite-scan-cooldown'
 import Database from '../sqlite/sync-database'
 import type { AiVaultScanIssue, AiVaultSession } from '../../shared/ai-vault-types'
 import type { SessionFileCandidate } from './session-scanner-types'
@@ -87,7 +88,14 @@ vi.mock('./session-parse-cache-persistence', async (importOriginal) => {
 let tempRoots: string[] = []
 let tempDbDirs: string[] = []
 
+beforeEach(() => {
+  // The SQLite backoff is process-wide by design; a crash-loop case must not
+  // leave the next scan paused.
+  resetOpenCodeSqliteScanCooldownForTests()
+})
+
 afterEach(async () => {
+  resetOpenCodeSqliteScanCooldownForTests()
   workerMock.listCalls = 0
   workerMock.parseCalls = 0
   workerMock.listOverride = null
@@ -175,7 +183,196 @@ function applyOpenCodeSchema(db: Database.Database): void {
   `)
 }
 
+function sqliteCandidate(dbPath: string, sessionId: string, mtimeMs: number): SessionFileCandidate {
+  return {
+    agent: 'opencode',
+    codexHome: null,
+    file: {
+      path: buildOpenCodeSqliteCandidatePath(dbPath, sessionId),
+      mtimeMs,
+      modifiedAt: new Date(mtimeMs).toISOString()
+    }
+  }
+}
+
+function sqliteSession(dbPath: string, sessionId: string, mtimeMs: number): AiVaultSession {
+  return {
+    id: `opencode:${sessionId}`,
+    executionHostId: 'local',
+    agent: 'opencode',
+    sessionId,
+    title: sessionId,
+    cwd: '/tmp/opencode',
+    branch: null,
+    model: null,
+    filePath: dbPath,
+    codexHome: null,
+    createdAt: new Date(mtimeMs).toISOString(),
+    updatedAt: new Date(mtimeMs).toISOString(),
+    modifiedAt: new Date(mtimeMs).toISOString(),
+    messageCount: 1,
+    totalTokens: 0,
+    previewMessages: [],
+    queuedMessageCount: 0,
+    subagentTranscriptCount: 0,
+    resumeCommand: `opencode --session '${sessionId}'`,
+    subagent: null
+  }
+}
+
 describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', () => {
+  it('keeps the SQLite budget for SQLite work when other agents parse for longer', async () => {
+    vi.useFakeTimers()
+    try {
+      const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-slow-others-'))
+      tempRoots.push(root)
+      const roots = isolatedScanRoots(root)
+      // A full batch of newer non-SQLite candidates sorts ahead of the DB rows.
+      for (let index = 0; index < 8; index += 1) {
+        await mkdir(join(roots.grokSessionsDir, `session-${index}`), { recursive: true })
+        await writeFile(join(roots.grokSessionsDir, `session-${index}`, 'summary.json'), '{}')
+      }
+
+      const dbPath = join(root, 'opencode.db')
+      const pendingGrok: (() => void)[] = []
+      grokMock.override = () =>
+        new Promise((resolve) => {
+          pendingGrok.push(() => resolve(null))
+        })
+      workerMock.listOverride = async () => [sqliteCandidate(dbPath, 'budget-session', 1_000)]
+      workerMock.parseOverride = async () => sqliteSession(dbPath, 'budget-session', 1_000)
+
+      const scan = scanAiVaultSessions({ ...roots, opencodeDbPaths: [dbPath], limit: 50 })
+      await vi.waitFor(() => expect(grokMock.calls).toBe(8))
+      // Far past the 45s budget, but none of it was OpenCode's to spend.
+      await vi.advanceTimersByTimeAsync(120_000)
+      for (const finish of pendingGrok) {
+        finish()
+      }
+      const result = await scan
+
+      expect(workerMock.parseCalls).toBe(1)
+      expect(result.sessions.map((session) => session.sessionId)).toEqual(['budget-session'])
+      expect(result.issues).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('serves warm parse-cache rows for SQLite candidates after termination', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-terminated-cache-'))
+    tempRoots.push(root)
+    const roots = isolatedScanRoots(root)
+    const dbPath = join(root, 'opencode.db')
+    const candidates = [
+      sqliteCandidate(dbPath, 'cached-a', 2_000),
+      sqliteCandidate(dbPath, 'cached-b', 1_000)
+    ]
+
+    workerMock.listOverride = async () => candidates
+    workerMock.parseOverride = async (args) => sqliteSession(dbPath, args.sessionId, 2_000)
+    const warm = await scanAiVaultSessions({
+      ...roots,
+      opencodeDbPaths: [dbPath],
+      platform: 'darwin',
+      limit: 50
+    })
+    expect(warm.sessions).toHaveLength(2)
+
+    // Second scan: the budget is gone before any candidate is prepared.
+    workerMock.parseCalls = 0
+    workerMock.listOverride = async (args) => {
+      args.context.tripCircuit(new Error('worker died'))
+      return candidates
+    }
+    const rescan = await scanAiVaultSessions({
+      ...roots,
+      opencodeDbPaths: [dbPath],
+      platform: 'darwin',
+      limit: 50
+    })
+
+    expect(workerMock.parseCalls).toBe(0)
+    expect(rescan.sessions.map((session) => session.sessionId).sort()).toEqual([
+      'cached-a',
+      'cached-b'
+    ])
+    expect(rescan.issues).toEqual([])
+  })
+
+  it('flags legacy OpenCode files as unreconciled when the SQLite listing is cancelled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-list-cancelled-'))
+    tempRoots.push(root)
+    const roots = isolatedScanRoots(root)
+    await mkdir(join(roots.opencodeStorageDir, 'session', 'project'), { recursive: true })
+    await writeFile(
+      join(roots.opencodeStorageDir, 'session', 'project', 'legacy-only.json'),
+      JSON.stringify({
+        id: 'legacy-only',
+        directory: '/tmp/legacy',
+        title: 'Legacy file session',
+        time: { created: 1_777_634_000_000, updated: 1_777_634_001_000 }
+      })
+    )
+
+    workerMock.listOverride = async (args) => {
+      args.context.tripCircuit(new Error('worker died'))
+      return []
+    }
+    const result = await scanAiVaultSessions({
+      ...roots,
+      opencodeDbPaths: [join(root, 'opencode.db')],
+      platform: 'darwin',
+      limit: 50
+    })
+
+    expect(result.sessions.map((session) => session.sessionId)).toContain('legacy-only')
+    expect(result.issues.map((issue) => issue.message)).toEqual([
+      'OpenCode history could not be checked against its SQLite database, so some sessions may be missing or out of date.'
+    ])
+  })
+
+  // Why: this scan re-runs every cache TTL. A crash loop that can't be retried
+  // into success must not re-burn a core on the same doomed work each time.
+  it('skips SQLite work entirely while the process-wide backoff holds', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-cooldown-'))
+    tempRoots.push(root)
+    const roots = isolatedScanRoots(root)
+    await mkdir(join(roots.opencodeStorageDir, 'session', 'project'), { recursive: true })
+    await writeFile(
+      join(roots.opencodeStorageDir, 'session', 'project', 'legacy-only.json'),
+      JSON.stringify({
+        id: 'legacy-only',
+        directory: '/tmp/legacy',
+        title: 'Legacy file session',
+        time: { created: 1_777_634_000_000, updated: 1_777_634_001_000 }
+      })
+    )
+    const scanArgs = {
+      ...roots,
+      opencodeDbPaths: [join(root, 'opencode.db')],
+      platform: 'darwin' as const,
+      limit: 50
+    }
+
+    // First scan dies to a crash loop, arming the backoff.
+    workerMock.listOverride = async (args) => {
+      args.context.tripCircuit(new Error('worker died'))
+      return []
+    }
+    await scanAiVaultSessions(scanArgs)
+    expect(workerMock.listCalls).toBe(1)
+
+    // Second scan must not reach the worker at all, and must say why.
+    const second = await scanAiVaultSessions(scanArgs)
+    expect(workerMock.listCalls).toBe(1)
+    // Legacy file history still lists; only the SQLite half is paused.
+    expect(second.sessions.map((session) => session.sessionId)).toContain('legacy-only')
+    expect(
+      second.issues.some((issue) => /paused after repeated failures/.test(issue.message))
+    ).toBe(true)
+  })
+
   it('stops native and WSL SQLite parsing at one scan deadline', async () => {
     vi.useFakeTimers()
     try {
@@ -230,7 +427,10 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
 
       expect(workerMock.listCalls).toBe(2)
       expect(workerMock.parseCalls).toBe(8)
-      expect(persistenceMock.lastStats?.fullParses).toBe(8)
+      // All 8 were cancelled, so none read a byte: parse stats count completed
+      // work, never work the deadline threw away.
+      expect(persistenceMock.lastStats?.fullParses).toBe(0)
+      expect(persistenceMock.lastStats?.bytesRead).toBe(0)
       expect(result.sessions).toEqual([])
       expect(
         result.issues.filter((issue) => issue.message.includes('OpenCode history was skipped'))

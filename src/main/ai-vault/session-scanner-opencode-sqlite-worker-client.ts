@@ -12,12 +12,6 @@ import {
   type WorkerFactory
 } from './session-scanner-opencode-sqlite-worker-transport'
 
-export {
-  IDLE_TEARDOWN_MS,
-  MAX_CONSECUTIVE_DEATHS
-} from './session-scanner-opencode-sqlite-worker-transport'
-export type { WorkerFactory } from './session-scanner-opencode-sqlite-worker-transport'
-
 export const LIST_TIMEOUT_MS = 30_000
 export const PARSE_TIMEOUT_MS = 15_000
 

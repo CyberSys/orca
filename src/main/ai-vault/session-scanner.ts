@@ -13,8 +13,7 @@ import {
 } from './codex-session-root-dedup'
 import {
   createAntigravityWorkspaceResolver,
-  readOptionalAntigravityHistoryFile,
-  type AntigravityWorkspaceResolver
+  readOptionalAntigravityHistoryFile
 } from './session-scanner-antigravity-history'
 import { antigravityHistoryPathForBrainDir } from './session-scanner-antigravity-paths'
 import { codexHomeForSessionsDir } from './session-scanner-codex-paths'
@@ -22,11 +21,8 @@ import {
   ensureSessionParseCacheLoaded,
   scheduleSessionParseCachePersist
 } from './session-parse-cache-persistence'
-import {
-  createSessionParseStats,
-  parseAgentSessionFileCached,
-  type SessionParseStats
-} from './session-scanner-parse-cache'
+import { createSessionParseStats, type SessionParseStats } from './session-scanner-parse-cache'
+import { parseSessionCandidates } from './session-scanner-candidate-parsing'
 import { discoverInScopeClaudeFiles } from './session-scanner-scope-discovery'
 import {
   DEFAULT_CODEX_HOME_DIR,
@@ -35,22 +31,16 @@ import {
 import type {
   AiVaultScanOptions,
   SessionFileCandidate,
-  SessionFileDiscovery,
-  SessionParseResult
+  SessionFileDiscovery
 } from './session-scanner-types'
-import { clampPositiveInteger, errorMessage } from './session-scanner-values'
-import {
-  isOpenCodeSqliteScanTerminatedError,
-  OpenCodeSqliteScanContext
-} from './session-scanner-opencode-sqlite-scan-context'
+import { clampPositiveInteger } from './session-scanner-values'
+import { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
 import { recordOpenCodeSqliteScanOutcome } from './session-scanner-opencode-sqlite-scan-outcome'
-import { OpenCodeSqliteCandidatePhase } from './session-scanner-opencode-sqlite-candidate-phase'
-import { withSessionExecutionHost } from './session-scanner-execution-host'
+import { openCodeSqliteScanCooldownRemainingMs } from './session-scanner-opencode-sqlite-scan-cooldown'
 import { mergeSessions } from './session-scanner-session-merge'
 
 const DEFAULT_LIMIT = 1000
 const DEFAULT_SCAN_LIMIT_PER_AGENT = 1000
-const SESSION_PARSE_CONCURRENCY = 8
 // Upper bound on extra in-scope transcripts discovered and parsed past the
 // recency cap; guards against a pathological scoped history directory.
 const SCOPE_PARSE_LIMIT = 2000
@@ -71,23 +61,31 @@ export async function scanAiVaultSessions(
   // "one core pegged" reports need to show whether transcript scanning is the
   // subsystem burning CPU, and how much of each scan the cache absorbed.
   return withSpan('aiVault.scan', async (span) => {
+    const limit = clampPositiveInteger(options.limit, DEFAULT_LIMIT)
+    const limitPerAgent = clampPositiveInteger(options.limitPerAgent, DEFAULT_SCAN_LIMIT_PER_AGENT)
+    const platform = options.platform ?? process.platform
+    const executionHostId = options.executionHostId ?? LOCAL_EXECUTION_HOST_ID
+    const issues: AiVaultScanIssue[] = []
+    const parseStats = createSessionParseStats()
+    const antigravityWorkspaceResolver = createAntigravityWorkspaceResolver(
+      readOptionalAntigravityHistoryFile
+    )
+    // Why: persisted entries must be seeded before any candidate is parsed, or
+    // the cold scan gains nothing from the cache file (#9210). Seeding happens
+    // before the OpenCode context exists so a large cache cannot spend its budget.
+    const cacheLoadStartedAtMs = Date.now()
+    await ensureSessionParseCacheLoaded()
+    span.setAttribute('parseCacheLoadMs', Date.now() - cacheLoadStartedAtMs)
     const opencodeSqliteScanContext = new OpenCodeSqliteScanContext()
+    // Why: a crash loop, a timeout loop, or a worker that will not spawn cannot
+    // be retried into success, and this scan re-runs every cache TTL. Back off
+    // process-wide instead of re-burning a core on the same doomed work.
+    const cooldownRemainingMs = openCodeSqliteScanCooldownRemainingMs()
+    if (cooldownRemainingMs > 0) {
+      opencodeSqliteScanContext.enterCooldown(cooldownRemainingMs)
+    }
+    span.setAttribute('opencodeSqliteCooldownMs', cooldownRemainingMs)
     try {
-      const limit = clampPositiveInteger(options.limit, DEFAULT_LIMIT)
-      const limitPerAgent = clampPositiveInteger(
-        options.limitPerAgent,
-        DEFAULT_SCAN_LIMIT_PER_AGENT
-      )
-      const platform = options.platform ?? process.platform
-      const executionHostId = options.executionHostId ?? LOCAL_EXECUTION_HOST_ID
-      const issues: AiVaultScanIssue[] = []
-      const parseStats = createSessionParseStats()
-      const antigravityWorkspaceResolver = createAntigravityWorkspaceResolver(
-        readOptionalAntigravityHistoryFile
-      )
-      // Why: persisted entries must be seeded before any candidate is parsed, or
-      // the cold scan gains nothing from the cache file (#9210).
-      await ensureSessionParseCacheLoaded()
       const discoveries = await discoverAiVaultSessionSources({
         options,
         limitPerAgent,
@@ -148,7 +146,8 @@ export async function scanAiVaultSessions(
         platform,
         executionHostId,
         issues,
-        parseStats
+        parseStats,
+        opencodeSqliteScanContext
       })
 
       span.setAttribute('candidates', candidates.length)
@@ -186,6 +185,7 @@ async function scanInScopeSessions(args: {
   executionHostId: ExecutionHostId
   issues: AiVaultScanIssue[]
   parseStats: SessionParseStats
+  opencodeSqliteScanContext: OpenCodeSqliteScanContext
 }): Promise<AiVaultSession[]> {
   if (args.scopePaths.length === 0) {
     return []
@@ -213,123 +213,7 @@ async function scanInScopeSessions(args: {
     platform: args.platform,
     executionHostId: args.executionHostId,
     issues: args.issues,
-    parseStats: args.parseStats
+    parseStats: args.parseStats,
+    opencodeSqliteScanContext: args.opencodeSqliteScanContext
   })
-}
-
-async function parseSessionCandidates(args: {
-  candidates: SessionFileCandidate[]
-  limit: number
-  platform: NodeJS.Platform
-  executionHostId: ExecutionHostId
-  issues: AiVaultScanIssue[]
-  parseStats: SessionParseStats
-  antigravityWorkspaceResolver?: AntigravityWorkspaceResolver
-  opencodeSqliteScanContext?: OpenCodeSqliteScanContext
-}): Promise<AiVaultSession[]> {
-  const sessions: AiVaultSession[] = []
-  let index = 0
-  const opencodePhase = new OpenCodeSqliteCandidatePhase(
-    args.candidates,
-    args.opencodeSqliteScanContext
-  )
-
-  while (index < args.candidates.length) {
-    if (canStopParsingSessions(sessions, args.limit, args.candidates[index]?.file.mtimeMs)) {
-      break
-    }
-
-    const remaining = args.candidates.length - index
-    const needed = Math.max(args.limit - sessions.length, 1)
-    const batchSize = Math.min(SESSION_PARSE_CONCURRENCY, needed, remaining)
-    const batch = args.candidates.slice(index, index + batchSize)
-    const parseableBatch = opencodePhase.prepareBatch(batch)
-    const parsePromises = parseableBatch.map((candidate) =>
-      parseSessionCandidate(
-        candidate,
-        args.platform,
-        args.executionHostId,
-        args.parseStats,
-        args.antigravityWorkspaceResolver,
-        args.opencodeSqliteScanContext
-      )
-    )
-    opencodePhase.trackBatch(parseableBatch, parsePromises)
-    const results = await Promise.all(parsePromises)
-
-    for (const result of results) {
-      if (result.issue) {
-        args.issues.push(result.issue)
-      }
-      if (result.session) {
-        sessions.push(result.session)
-      }
-    }
-
-    // Why: cross-volume backfill copies have no shared inode, so collapse
-    // parsed aliases before they can crowd the unique-session parse budget.
-    const uniqueSessions = dedupeCodexSessionsBySessionId(sessions)
-    sessions.splice(0, sessions.length, ...uniqueSessions)
-
-    index += batchSize
-  }
-
-  opencodePhase.finish()
-  return sessions
-}
-
-async function parseSessionCandidate(
-  candidate: SessionFileCandidate,
-  platform: NodeJS.Platform,
-  executionHostId: ExecutionHostId,
-  parseStats: SessionParseStats,
-  antigravityWorkspaceResolver?: AntigravityWorkspaceResolver,
-  opencodeSqliteScanContext?: OpenCodeSqliteScanContext
-): Promise<SessionParseResult> {
-  try {
-    let session = await parseAgentSessionFileCached(
-      candidate,
-      platform,
-      parseStats,
-      opencodeSqliteScanContext
-    )
-    if (session && candidate.antigravityHistoryPath && antigravityWorkspaceResolver) {
-      session = await antigravityWorkspaceResolver.enrich(session, candidate.antigravityHistoryPath)
-    }
-    return {
-      session: session ? withSessionExecutionHost(session, executionHostId) : null,
-      issue: null
-    }
-  } catch (err) {
-    if (isOpenCodeSqliteScanTerminatedError(err)) {
-      return { session: null, issue: null }
-    }
-    return {
-      session: null,
-      issue: {
-        executionHostId,
-        agent: candidate.agent,
-        path: candidate.file.path,
-        message: errorMessage(err)
-      }
-    }
-  }
-}
-
-function canStopParsingSessions(
-  sessions: AiVaultSession[],
-  limit: number,
-  nextCandidateMtimeMs: number | undefined
-): boolean {
-  if (sessions.length < limit || typeof nextCandidateMtimeMs !== 'number') {
-    return false
-  }
-  const visibleCutoff = sessions
-    .map(sessionSortTime)
-    .sort((left, right) => right - left)
-    .at(limit - 1)
-
-  // Transcript mtime is already our discovery bound and fallback sort key; older
-  // files cannot displace the current visible set once the cutoff is newer.
-  return typeof visibleCutoff === 'number' && nextCandidateMtimeMs < visibleCutoff
 }

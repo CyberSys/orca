@@ -1,12 +1,15 @@
 import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  IDLE_TEARDOWN_MS,
   LIST_TIMEOUT_MS,
-  MAX_CONSECUTIVE_DEATHS,
   OpenCodeSqliteWorkerClient,
   PARSE_TIMEOUT_MS
 } from './session-scanner-opencode-sqlite-worker-client'
+import {
+  IDLE_TEARDOWN_MS,
+  MAX_CONSECUTIVE_DEATHS,
+  MAX_CONSECUTIVE_TIMEOUTS
+} from './session-scanner-opencode-sqlite-worker-transport'
 import type {
   OpenCodeSqliteWorkerRequest,
   OpenCodeSqliteWorkerResponse
@@ -118,10 +121,30 @@ function watchInternalSettlement(client: OpenCodeSqliteWorkerClient): {
   }
 }
 
+// The transport waits for a destroyed worker to actually die before spawning a
+// replacement — OpenCode's SQLite reads are synchronous, so `terminate()` is not
+// instant and a second thread started early would double the CPU cost. That puts
+// every respawn a few microtasks after the fault that caused it.
+// Microtasks only, never a macrotask: fake timers mock setImmediate, so a
+// timer-based flush would deadlock the tests that use them.
+async function flushWorkerTeardown(): Promise<void> {
+  for (let tick = 0; tick < 8; tick += 1) {
+    await Promise.resolve()
+  }
+}
+
+// The budget clock is armed by the scan phases, not by construction; transport
+// tests drive contexts whose SQLite leg is already running.
+function armedScanContext(deadlineMs?: number): OpenCodeSqliteScanContext {
+  const scanContext = new OpenCodeSqliteScanContext(deadlineMs)
+  scanContext.armDeadline()
+  return scanContext
+}
+
 let context: OpenCodeSqliteScanContext
 
 beforeEach(() => {
-  context = new OpenCodeSqliteScanContext()
+  context = armedScanContext()
 })
 
 afterEach(() => {
@@ -262,8 +285,8 @@ describe('OpenCodeSqliteWorkerClient', () => {
 
   it('uses one queue-inclusive deadline and preserves unrelated FIFO work', async () => {
     vi.useFakeTimers()
-    const expiringContext = new OpenCodeSqliteScanContext(10)
-    const retainedContext = new OpenCodeSqliteScanContext(1_000)
+    const expiringContext = armedScanContext(10)
+    const retainedContext = armedScanContext(1_000)
     try {
       const workers: FakeWorker[] = []
       const client = new OpenCodeSqliteWorkerClient({
@@ -311,7 +334,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
 
   it('cleans up once when the per-call timeout wins a later context abort', async () => {
     vi.useFakeTimers()
-    const timeoutContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
+    const timeoutContext = armedScanContext(PARSE_TIMEOUT_MS * 2)
     try {
       const workers: FakeWorker[] = []
       const client = new OpenCodeSqliteWorkerClient({
@@ -357,8 +380,8 @@ describe('OpenCodeSqliteWorkerClient', () => {
   it('cancels queued work without terminating another context active on the worker', async () => {
     const workers: FakeWorker[] = []
     const client = new OpenCodeSqliteWorkerClient({ workerFactory: makeFactory(workers), log() {} })
-    const activeContext = new OpenCodeSqliteScanContext()
-    const queuedContext = new OpenCodeSqliteScanContext()
+    const activeContext = armedScanContext()
+    const queuedContext = armedScanContext()
     try {
       const active = client.parse({
         context: activeContext,
@@ -389,7 +412,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
   it('dispose cancels active and queued work owned by an exceptional scan exit', async () => {
     const workers: FakeWorker[] = []
     const client = new OpenCodeSqliteWorkerClient({ workerFactory: makeFactory(workers), log() {} })
-    const exceptionalContext = new OpenCodeSqliteScanContext()
+    const exceptionalContext = armedScanContext()
     const active = client.parse({
       context: exceptionalContext,
       dbPath: '/db#a',
@@ -415,7 +438,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
     'cleans up once when context abort wins the %s and timeout races',
     async (event) => {
       vi.useFakeTimers()
-      const raceContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
+      const raceContext = armedScanContext(PARSE_TIMEOUT_MS * 2)
       try {
         const workers: FakeWorker[] = []
         const client = new OpenCodeSqliteWorkerClient({
@@ -459,7 +482,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
     'cleans up once when worker %s wins the context-abort race',
     async (event) => {
       vi.useFakeTimers()
-      const raceContext = new OpenCodeSqliteScanContext(PARSE_TIMEOUT_MS * 2)
+      const raceContext = armedScanContext(PARSE_TIMEOUT_MS * 2)
       try {
         const workers: FakeWorker[] = []
         const client = new OpenCodeSqliteWorkerClient({
@@ -540,10 +563,101 @@ describe('OpenCodeSqliteWorkerClient', () => {
     ).rejects.toThrow(/background scanner could not start/)
   })
 
+  // Why: the transport is a process-wide singleton shared by every concurrent
+  // scan. A transient spawn failure that drained the whole queue would erase
+  // OpenCode history for scans that had nothing to do with it.
+  it('fails only the call that hit a spawn failure, not another scan behind it', async () => {
+    const workers: FakeWorker[] = []
+    let spawnAttempts = 0
+    const client = new OpenCodeSqliteWorkerClient({
+      workerFactory: () => {
+        spawnAttempts += 1
+        // The very first spawn succeeds so a call can occupy the worker; the
+        // next one fails; the one after that recovers.
+        if (spawnAttempts === 2) {
+          throw new Error('transient spawn failure')
+        }
+        const worker = new FakeWorker()
+        workers.push(worker)
+        return worker as unknown as Worker
+      },
+      log() {}
+    })
+    const otherContext = armedScanContext()
+
+    try {
+      const active = client.parse({ context, dbPath: '/db#a', sessionId: 'a', platform: 'darwin' })
+      // Queued behind the active call, so both are pending when the worker dies.
+      const queuedOwn = client
+        .parse({ context, dbPath: '/db#b', sessionId: 'b', platform: 'darwin' })
+        .catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
+      const queuedOther = client.parse({
+        context: otherContext,
+        dbPath: '/db#c',
+        sessionId: 'c',
+        platform: 'darwin'
+      })
+
+      workers[0]!.emit('error', new Error('worker died'))
+      await expect(active).rejects.toThrow(/worker died/)
+      await flushWorkerTeardown()
+
+      // The respawn threw for the head call only; the call behind it got the
+      // retry and a live worker.
+      await expect(queuedOwn).resolves.toMatch(/background scanner could not start/)
+      expect(workers).toHaveLength(2)
+      workers[1]!.emit('message', { id: workers[1]!.lastId(), ok: true, value: 'C' })
+      await expect(queuedOther).resolves.toBe('C')
+    } finally {
+      otherContext.dispose()
+    }
+  })
+
+  // Why: a worker answering slowly is not a worker that died. Reporting a large
+  // database as a crash sends people looking for the wrong problem.
+  it('trips a timeout circuit, not the crash circuit, when calls keep timing out', async () => {
+    vi.useFakeTimers()
+    const timeoutContext = armedScanContext(PARSE_TIMEOUT_MS * (MAX_CONSECUTIVE_TIMEOUTS + 4))
+    try {
+      const workers: FakeWorker[] = []
+      const client = new OpenCodeSqliteWorkerClient({
+        workerFactory: makeFactory(workers),
+        log() {}
+      })
+
+      const pending = Array.from({ length: MAX_CONSECUTIVE_TIMEOUTS }, (_, index) =>
+        client
+          .parse({
+            context: timeoutContext,
+            dbPath: `/db#${index}`,
+            sessionId: `s${index}`,
+            platform: 'darwin'
+          })
+          .catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
+      )
+
+      for (let index = 0; index < MAX_CONSECUTIVE_TIMEOUTS; index += 1) {
+        await vi.advanceTimersByTimeAsync(PARSE_TIMEOUT_MS)
+        await flushWorkerTeardown()
+      }
+      for (const outcome of pending) {
+        await expect(outcome).resolves.toMatch(/timed out|kept timing out|cancelled/)
+      }
+
+      expect(timeoutContext.isTerminated).toBe(true)
+      expect(timeoutContext.metrics().terminationReason).toBe('workerTimeoutLoop')
+      // Never spawned more workers than the timeout budget allows.
+      expect(workers.length).toBeLessThanOrEqual(MAX_CONSECUTIVE_TIMEOUTS)
+    } finally {
+      timeoutContext.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('rejects already-aborted work without spawning a worker', async () => {
     const workers: FakeWorker[] = []
     const client = new OpenCodeSqliteWorkerClient({ workerFactory: makeFactory(workers), log() {} })
-    const abortedContext = new OpenCodeSqliteScanContext()
+    const abortedContext = armedScanContext()
     abortedContext.dispose()
 
     await expect(
@@ -569,9 +683,11 @@ describe('OpenCodeSqliteWorkerClient', () => {
 
     // Crash every worker as it is spawned; the client respawns up to the cap.
     for (let i = 0; i < MAX_CONSECUTIVE_DEATHS; i++) {
+      await flushWorkerTeardown()
       expect(workers[i]).toBeDefined()
       workers[i]!.emit('error', new Error(`crash ${i}`))
     }
+    await flushWorkerTeardown()
 
     await Promise.all(settled)
     // No respawn past the cap: only MAX_CONSECUTIVE_DEATHS workers were created,
@@ -661,6 +777,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
     workers[0]!.emit('message', { id: workers[0]!.lastId(), ok: true, value: 'A' })
     await expect(first).resolves.toBe('A')
     workers[0]!.emit('exit', 0)
+    await flushWorkerTeardown()
 
     const second = client.parse({ context, dbPath: '/db#b', sessionId: 'b', platform: 'darwin' })
     expect(workers).toHaveLength(2)
@@ -695,7 +812,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
   it('retains scan fault state across queue-empty parser batches', async () => {
     const workers: FakeWorker[] = []
     const client = new OpenCodeSqliteWorkerClient({ workerFactory: makeFactory(workers), log() {} })
-    const otherContext = new OpenCodeSqliteScanContext()
+    const otherContext = armedScanContext()
     const addListener = vi.spyOn(context.signal, 'addEventListener')
     const removeListener = vi.spyOn(context.signal, 'removeEventListener')
 

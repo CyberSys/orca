@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActiveSpan } from '../observability/tracer'
 import { recordOpenCodeSqliteScanOutcome } from './session-scanner-opencode-sqlite-scan-outcome'
 import { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
+import {
+  openCodeSqliteScanCooldownRemainingMs,
+  resetOpenCodeSqliteScanCooldownForTests
+} from './session-scanner-opencode-sqlite-scan-cooldown'
 
 function recordingSpan(attributes: Map<string, unknown>): ActiveSpan {
   return {
@@ -18,6 +22,39 @@ function recordingSpan(attributes: Map<string, unknown>): ActiveSpan {
 }
 
 describe('recordOpenCodeSqliteScanOutcome', () => {
+  beforeEach(() => {
+    resetOpenCodeSqliteScanCooldownForTests()
+  })
+
+  afterEach(() => {
+    resetOpenCodeSqliteScanCooldownForTests()
+  })
+
+  it('arms the process-wide backoff on a crash loop and clears it on a clean scan', () => {
+    const crashed = new OpenCodeSqliteScanContext()
+    try {
+      crashed.tripCircuit(new Error('worker died'))
+      expect(openCodeSqliteScanCooldownRemainingMs()).toBeGreaterThan(0)
+    } finally {
+      crashed.dispose()
+    }
+
+    // A budget expiry is not a hard failure: it still made cacheable progress.
+    const clean = new OpenCodeSqliteScanContext()
+    try {
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context: clean,
+        discoveries: [],
+        issues: [],
+        span: recordingSpan(new Map())
+      })
+      expect(openCodeSqliteScanCooldownRemainingMs()).toBe(0)
+    } finally {
+      clean.dispose()
+    }
+  })
+
   it('reports omitted work once with tuning metrics', () => {
     const context = new OpenCodeSqliteScanContext()
     const attributes = new Map<string, unknown>()
@@ -45,10 +82,101 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
     }
   })
 
+  it('names the cause when a worker crash loop, not the budget, omitted work', () => {
+    const context = new OpenCodeSqliteScanContext()
+    const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
+    try {
+      context.tripCircuit(new Error('worker died'))
+      context.markWorkOmitted()
+
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues,
+        span: recordingSpan(new Map())
+      })
+
+      expect(issues[0]?.message).toMatch(/kept crashing/)
+    } finally {
+      context.dispose()
+    }
+  })
+
+  it('reports unreconciled legacy files when the SQLite listing was cancelled', () => {
+    const context = new OpenCodeSqliteScanContext()
+    const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
+    try {
+      context.markSqliteListCancelled()
+
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues,
+        span: recordingSpan(new Map())
+      })
+
+      expect(issues).toHaveLength(1)
+      expect(issues[0]?.message).toMatch(/could not be checked against its SQLite database/)
+    } finally {
+      context.dispose()
+    }
+  })
+
+  // Why: the cause is the actionable half. A cancelled listing is a consequence
+  // of it, so it must not displace it in a single-issue report.
+  it('leads with the termination cause when the listing was also cancelled', () => {
+    const context = new OpenCodeSqliteScanContext()
+    const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
+    try {
+      context.tripTimeoutCircuit(new Error('too slow'))
+      context.markSqliteListCancelled()
+      context.markWorkOmitted()
+
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues,
+        span: recordingSpan(new Map())
+      })
+
+      expect(issues).toHaveLength(1)
+      expect(issues[0]?.message).toMatch(/^Some OpenCode history was skipped because its SQLite/)
+      expect(issues[0]?.message).toMatch(/never checked/)
+    } finally {
+      context.dispose()
+    }
+  })
+
+  it('explains the pause while the process-wide backoff holds', () => {
+    const context = new OpenCodeSqliteScanContext()
+    const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
+    try {
+      context.enterCooldown(120_000)
+
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues,
+        span: recordingSpan(new Map())
+      })
+
+      // Reported even with nothing omitted: it explains the absent SQLite half.
+      expect(issues).toHaveLength(1)
+      expect(issues[0]?.message).toMatch(/paused after repeated failures/)
+    } finally {
+      context.dispose()
+    }
+  })
+
   it('does not report deadline expiry when no work was omitted', async () => {
     vi.useFakeTimers()
     const context = new OpenCodeSqliteScanContext(1)
     try {
+      context.armDeadline()
       await vi.advanceTimersByTimeAsync(1)
       const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
       recordOpenCodeSqliteScanOutcome({
@@ -71,6 +199,8 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
     const context = new OpenCodeSqliteScanContext(1)
     try {
       context.disarmDeadline()
+      // A retired budget stays retired even if a later leg tries to re-arm it.
+      context.armDeadline()
       await vi.advanceTimersByTimeAsync(10)
       expect(context.isTerminated).toBe(false)
       expect(context.metrics().deadlineExpired).toBe(false)

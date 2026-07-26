@@ -21,6 +21,7 @@ import {
   initSessionParseCachePersistence,
   resetSessionParseCachePersistenceForTests,
   scheduleSessionParseCachePersist,
+  serializeSessionParseCacheSnapshot,
   SESSION_PARSE_CACHE_MAX_BYTES
 } from './session-parse-cache-persistence'
 import { scanAiVaultSessions } from './session-scanner'
@@ -615,6 +616,49 @@ describe('session parse cache persistence', () => {
     await flushSessionParseCachePersistForTests()
 
     expect(await readFile(cacheFile, 'utf8')).toBe(previousSnapshot)
+    expect(debugSpy).toHaveBeenCalled()
+    debugSpy.mockRestore()
+  })
+
+  // Why: hitting the cap must degrade, not disable. Giving up outright would
+  // leave the stale file in place and every later save failing identically,
+  // silently turning the #9210 cache off for the rest of the install's life.
+  it('trims the oldest entries rather than abandoning an oversized snapshot', () => {
+    const entries: [string, PersistedSessionParseCacheEntry][] = Array.from(
+      { length: 16 },
+      (_, index) => [
+        `/foreign/entry-${index}.jsonl`,
+        { mtimeMs: index, sizeBytes: 1, platform: process.platform, session: null }
+      ]
+    )
+
+    // A cap that only a subset can fit under.
+    const serialized = serializeSessionParseCacheSnapshot(entries, APP_VERSION, 512)
+    expect(serialized).not.toBeNull()
+
+    const saved = JSON.parse(serialized!) as {
+      entries: [string, PersistedSessionParseCacheEntry][]
+    }
+    expect(saved.entries.length).toBeGreaterThan(0)
+    expect(saved.entries.length).toBeLessThan(entries.length)
+    // Snapshot order is oldest→newest, and a restart only reuses the newest.
+    expect(saved.entries.at(-1)?.[0]).toBe('/foreign/entry-15.jsonl')
+  })
+
+  it('reports rather than writes when no subset of entries can fit', () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    // One poison entry, so trimming can never produce a fitting snapshot.
+    const serialized = serializeSessionParseCacheSnapshot(
+      [
+        [
+          '/foreign/huge.jsonl',
+          { mtimeMs: 1, sizeBytes: 1, platform: process.platform, session: null }
+        ]
+      ],
+      APP_VERSION,
+      8
+    )
+    expect(serialized).toBeNull()
     expect(debugSpy).toHaveBeenCalled()
     debugSpy.mockRestore()
   })

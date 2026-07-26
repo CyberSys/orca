@@ -19,6 +19,13 @@ import {
 import type { SessionFileCandidate } from './session-scanner-types'
 import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
 
+export class MissingOpenCodeSqliteScanContextError extends Error {
+  constructor(filePath: string) {
+    super(`OpenCode SQLite parsing requires a scan context (${filePath})`)
+    this.name = 'MissingOpenCodeSqliteScanContextError'
+  }
+}
+
 /**
  * Parse a single agent session file into an `AiVaultSession`. Routes to the
  * appropriate agent-specific parser based on `candidate.agent`. For OpenCode
@@ -52,8 +59,10 @@ export async function parseAgentSessionFile(
       // real filesystem paths and fall through to the JSON parser.
       const sqliteCandidate = splitOpenCodeSqliteCandidate(candidate.file.path)
       if (sqliteCandidate) {
+        // Every production caller reaches this through parseSessionCandidates,
+        // which requires a context; only narrow-agent unit tests may omit it.
         if (!opencodeSqliteScanContext) {
-          throw new Error('OpenCode SQLite parsing requires a scan context')
+          throw new MissingOpenCodeSqliteScanContextError(candidate.file.path)
         }
         return parseOpenCodeSqliteSessionViaWorker({
           context: opencodeSqliteScanContext,
