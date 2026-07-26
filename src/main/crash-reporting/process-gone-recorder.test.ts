@@ -42,6 +42,12 @@ function event(overrides: Partial<ProcessGoneCrashEvent> = {}): ProcessGoneCrash
   }
 }
 
+function highwaterSurfaces(): unknown[] {
+  return getCrashBreadcrumbSnapshot()
+    .filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
+    .map((breadcrumb) => breadcrumb.data?.rendererSurface)
+}
+
 let sink: CapturingSink
 
 beforeEach(() => {
@@ -255,6 +261,126 @@ describe('recordProcessGoneCrash', () => {
 
     expect(getCrashBreadcrumbSnapshot()).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'renderer_memory_highwater' })])
+    )
+  })
+
+  // Why: a suppressed reload replaces the renderer just as a crash does, so the
+  // successor would otherwise inherit the reloaded renderer's heap profiles.
+  it('clears retained profiles on an expected renderer reload that writes no report', () => {
+    const record = vi.fn()
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85,
+      usedHeapMB: 3586
+    })
+
+    recordProcessGoneCrash(
+      { record } as never,
+      event({ reason: 'killed', exitCode: 15, expectedTeardown: 'renderer-reload' }),
+      new ProcessGoneDedupe()
+    )
+
+    expect(record).not.toHaveBeenCalled()
+    expect(highwaterSurfaces()).toEqual([])
+  })
+
+  it('clears retained profiles when the reason is not a crash-report reason', () => {
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85
+    })
+
+    recordProcessGoneCrash(null, event({ reason: 'clean-exit' }), new ProcessGoneDedupe())
+
+    expect(highwaterSurfaces()).toEqual([])
+  })
+
+  // Why: React error-boundary reports travel this path with no process death.
+  it('keeps retained profiles for a non-process renderer report', () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85
+    })
+
+    recordProcessGoneCrash(
+      { record } as never,
+      event({ processType: 'react-render' }),
+      new ProcessGoneDedupe()
+    )
+
+    expect(highwaterSurfaces()).toEqual(['main'])
+  })
+
+  // Why: the popout renderer is still alive and its one-shot guard stays armed,
+  // so a wiped profile is never re-emitted for the rest of that session.
+  it('does not wipe a live popout profile when the main renderer dies', () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85
+    })
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'dashboard-popout',
+      thresholdPct: 60
+    })
+
+    recordProcessGoneCrash({ record } as never, event(), new ProcessGoneDedupe())
+
+    expect(highwaterSurfaces()).toEqual(['dashboard-popout'])
+  })
+
+  it('clears only the popout profile when the popout renderer dies', () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85
+    })
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'dashboard-popout',
+      thresholdPct: 60
+    })
+
+    recordProcessGoneCrash(
+      { record } as never,
+      event({ rendererSurface: 'dashboard-popout' }),
+      new ProcessGoneDedupe()
+    )
+
+    expect(highwaterSurfaces()).toEqual(['main'])
+  })
+
+  // Why: the eager clear runs before the async persist; a retry re-snapshots, so
+  // a failed persist must put the profiles back or the durable report loses the ladder.
+  it('still reports the heap ladder when the retry follows a failed persist', async () => {
+    const record = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce({ id: 'report-2' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    recordCrashBreadcrumb('renderer_memory_highwater', {
+      rendererSurface: 'main',
+      thresholdPct: 85,
+      usedHeapMB: 3586
+    })
+
+    recordProcessGoneCrash({ record } as never, event(), dedupe)
+    await vi.waitFor(() =>
+      expect(getCrashBreadcrumbSnapshot()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'crash_report_persist_failed' })])
+      )
+    )
+    recordProcessGoneCrash({ record } as never, event(), dedupe)
+
+    await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2))
+    expect(record.mock.calls[1][0].breadcrumbs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'renderer_memory_highwater',
+          data: expect.objectContaining({ usedHeapMB: 3586 })
+        })
+      ])
     )
   })
 })

@@ -257,6 +257,29 @@ describe('createRemoteRuntimePtyTransport', () => {
     transport.destroy?.()
   })
 
+  // Why: detach hands the PTY to a successor transport and destroy ends this one;
+  // a surviving gauge inflates every later renderer_memory_highwater profile.
+  it.each(['detach', 'destroy'] as const)(
+    'drops its side-effect gauge from the census on %s',
+    async (teardown) => {
+      // Import registers the census contributor; vi.resetModules gives a zeroed graph.
+      await import('./pty-side-effect-pending-census')
+      const { collectRendererMemoryProfileCounts } = await import('@/lib/renderer-memory-profile')
+      const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+      expect(collectRendererMemoryProfileCounts()['ptySideEffects.processors']).toBe(0)
+
+      const transport = createRemoteRuntimePtyTransport('env-1', { worktreeId: 'wt-1' })
+      transport.attach({ existingPtyId: 'remote:terminal-1', callbacks: {} })
+      await vi.waitFor(() => expect(subscriptionSendBinary).toHaveBeenCalled())
+      expect(collectRendererMemoryProfileCounts()['ptySideEffects.processors']).toBe(1)
+
+      transport[teardown]?.()
+
+      expect(collectRendererMemoryProfileCounts()['ptySideEffects.processors']).toBe(0)
+      transport.destroy?.()
+    }
+  )
+
   it('recovers when the first restored-terminal subscription attempt is offline', async () => {
     vi.useFakeTimers()
     try {

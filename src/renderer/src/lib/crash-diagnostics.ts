@@ -1,6 +1,7 @@
 import type {
   CrashReportBreadcrumbData,
-  CrashReportDetailValue
+  CrashReportDetailValue,
+  RendererSurface
 } from '../../../shared/crash-reporting'
 import {
   getBrowserWebviewMemoryProfile,
@@ -15,8 +16,6 @@ const BYTES_PER_MEGABYTE = 1024 * 1024
 // Four levels give deltas between profiles; a 40 MB/min climb crosses 0.6→dead
 // in under an hour, so a two-level ladder produced no usable growth series.
 const RENDERER_MEMORY_HIGHWATER_RATIOS = [0.4, 0.6, 0.75, 0.85] as const
-
-type RendererSurface = 'main' | 'dashboard-popout'
 
 type BrowserPerformanceMemory = {
   usedJSHeapSize?: number
@@ -136,8 +135,8 @@ function recordRendererMemoryHighwater(
 ): void {
   const used = memory.usedJSHeapSize
   const limit = memory.jsHeapSizeLimit
-  // Why: NaN would satisfy `ratio < threshold` for nothing, emitting both
-  // levels spuriously and disarming the one-shot for the session.
+  // Why: NaN would satisfy `ratio < threshold` for nothing, emitting every
+  // ladder level spuriously and disarming the one-shot for the session.
   if (!isFiniteHeapBytes(used) || !isFiniteHeapBytes(limit) || limit <= 0) {
     return
   }
@@ -152,7 +151,7 @@ function recordRendererMemoryHighwater(
   if (!crossedThreshold) {
     return
   }
-  // Why: a single sample can cross both thresholds; profile the large heap once.
+  // Why: a single sample can cross several ladder levels; profile the large heap once.
   const profile = compactBreadcrumbData({
     rendererSurface,
     usedHeapMB: toMegabytes(used),

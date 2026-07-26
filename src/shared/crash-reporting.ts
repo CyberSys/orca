@@ -7,6 +7,9 @@ export type { CrashReportDiagnosticBundle } from './crash-reporting-diagnostic-b
 
 export type CrashReportStatus = 'pending' | 'sent' | 'dismissed'
 export type CrashReportSource = 'renderer' | 'child'
+// Why: retained heap profiles are keyed by surface, so both the renderer that
+// stamps them and main's process-gone clear must agree on the same strings.
+export type RendererSurface = 'main' | 'dashboard-popout'
 
 export type CrashReportDetailValue = string | number | boolean | null
 export type CrashReportBreadcrumbData = Record<string, CrashReportDetailValue>

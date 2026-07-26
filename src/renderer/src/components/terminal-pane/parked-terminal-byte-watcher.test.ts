@@ -462,6 +462,21 @@ describe('startParkedTerminalByteWatcher', () => {
     dispose()
   })
 
+  // Why: the watcher's processor is per park/reveal cycle; a retained gauge would
+  // inflate the census in every renderer_memory_highwater profile after it.
+  it('dispose drops the processor from the pty side-effect census', async () => {
+    // Import registers the census contributor; vi.resetModules gives a zeroed graph.
+    await import('./pty-side-effect-pending-census')
+    const { collectRendererMemoryProfileCounts } = await import('@/lib/renderer-memory-profile')
+    expect(collectRendererMemoryProfileCounts()['ptySideEffects.processors']).toBe(0)
+
+    const { dispose } = await startWatcher()
+    expect(collectRendererMemoryProfileCounts()['ptySideEffects.processors']).toBe(1)
+
+    dispose()
+    expect(collectRendererMemoryProfileCounts()['ptySideEffects.processors']).toBe(0)
+  })
+
   it('disposes the previous watcher when a new one starts for the same PTY', async () => {
     await startWatcher({ paneId: 1 })
     const second = await startWatcher({ paneId: 2 })

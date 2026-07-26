@@ -266,6 +266,8 @@ export function startParkedTerminalByteWatcher(
     unregisterFactConsumer?.()
     // Why: clears tracker/timer/detector state so the watcher can't fire after the revealed pane's live parsers take over.
     processor?.clearAccumulatedState()
+    // Why: the watcher's processor outlives nothing past dispose — leave its gauge in the census and every park/reveal cycle leaks one.
+    processor?.disposePendingSideEffectGauge()
     clearBellNotificationTimer()
     clearAgentTaskCompleteTimer()
     pendingBellNotification = false

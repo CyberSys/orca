@@ -1,10 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearCrashBreadcrumbsForTest,
+  clearRetainedHighwaterBreadcrumbs,
   getCrashBreadcrumbSnapshot,
   recordCoalescedCrashBreadcrumb,
-  recordCrashBreadcrumb
+  recordCrashBreadcrumb,
+  restoreRetainedHighwaterBreadcrumbs
 } from './crash-breadcrumb-store'
+
+function retainedProfiles(): { rendererSurface?: unknown; thresholdPct?: unknown }[] {
+  return getCrashBreadcrumbSnapshot()
+    .filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
+    .map((breadcrumb) => ({
+      rendererSurface: breadcrumb.data?.rendererSurface,
+      thresholdPct: breadcrumb.data?.thresholdPct
+    }))
+}
+
+function recordHighwater(rendererSurface: string, thresholdPct: number, usedHeapMB = 100): void {
+  recordCrashBreadcrumb('renderer_memory_highwater', {
+    rendererSurface,
+    thresholdPct,
+    usedHeapMB
+  })
+}
 
 afterEach(() => {
   vi.useRealTimers()
@@ -96,6 +115,68 @@ describe('crash breadcrumb store', () => {
         .filter((breadcrumb) => breadcrumb.data?.rendererSurface === 'dashboard-popout')
         .map((breadcrumb) => breadcrumb.data?.thresholdPct)
     ).toEqual([40, 60, 75, 85])
+  })
+
+  // Why: process-gone is wired from the main window; a popout that outlives it
+  // never re-emits (its renderer-side one-shot guard is still armed).
+  it('clears only the dead surface, keeping a live popout profile', () => {
+    recordHighwater('main', 85)
+    recordHighwater('dashboard-popout', 60)
+
+    clearRetainedHighwaterBreadcrumbs({ surface: 'main' })
+
+    expect(retainedProfiles()).toEqual([{ rendererSurface: 'dashboard-popout', thresholdPct: 60 }])
+  })
+
+  it('clears only the popout profile when the popout is the dead surface', () => {
+    recordHighwater('main', 85)
+    recordHighwater('dashboard-popout', 60)
+
+    clearRetainedHighwaterBreadcrumbs({ surface: 'dashboard-popout' })
+
+    expect(retainedProfiles()).toEqual([{ rendererSurface: 'main', thresholdPct: 85 }])
+  })
+
+  it('takes unattributed profiles with the dead surface', () => {
+    recordCrashBreadcrumb('renderer_memory_highwater', { thresholdPct: 75 })
+
+    clearRetainedHighwaterBreadcrumbs({ surface: 'main' })
+
+    expect(retainedProfiles()).toEqual([])
+  })
+
+  it('re-seeds cleared profiles from a snapshot without clobbering newer ones', () => {
+    recordHighwater('main', 85, 3586)
+    recordHighwater('main', 60, 2100)
+    const snapshot = getCrashBreadcrumbSnapshot()
+    clearRetainedHighwaterBreadcrumbs({ surface: 'main' })
+    // The replacement renderer re-crosses one level before the retry lands.
+    recordHighwater('main', 60, 900)
+
+    restoreRetainedHighwaterBreadcrumbs(snapshot)
+
+    expect(
+      getCrashBreadcrumbSnapshot()
+        .filter((breadcrumb) => breadcrumb.name === 'renderer_memory_highwater')
+        .map((breadcrumb) => [breadcrumb.data?.thresholdPct, breadcrumb.data?.usedHeapMB])
+    ).toEqual([
+      [85, 3586],
+      [60, 900]
+    ])
+  })
+
+  it('keeps the retained cap while re-seeding', () => {
+    for (const thresholdPct of [40, 60, 75, 85]) {
+      recordHighwater('main', thresholdPct)
+      recordHighwater('dashboard-popout', thresholdPct)
+    }
+    const snapshot = getCrashBreadcrumbSnapshot()
+    clearRetainedHighwaterBreadcrumbs({ surface: 'main' })
+    recordHighwater('third-surface', 85)
+
+    restoreRetainedHighwaterBreadcrumbs(snapshot)
+
+    expect(retainedProfiles()).toHaveLength(8)
   })
 
   it('redacts sensitive breadcrumb fields before they can be snapshotted', () => {

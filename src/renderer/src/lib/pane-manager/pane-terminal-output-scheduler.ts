@@ -258,12 +258,6 @@ function recordQueuePeaks(entry: QueueEntry): void {
   }
 }
 
-export function _resetTerminalOutputQueuePeaksForTests(): void {
-  peakQueuedCharsPerTerminal = 0
-  peakQueuedTerminalCount = 0
-  droppedBacklogTotal = 0
-}
-
 // Why: names the output backlog in renderer_memory_highwater crash profiles;
 // the e2e-gated debugState is invisible in production bundles.
 registerRendererMemoryProfileContributor('terminalOutputQueue', () => {
