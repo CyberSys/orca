@@ -11,6 +11,8 @@ import { redactPtyIdForDiagnostics } from '../../shared/pty-delivery-diagnostics
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../shared/constants'
 import type { TuiAgent } from '../../shared/types'
 import type { AgentSessionOwnerBinding } from '../../shared/agent-session-host-authority'
+import { AGENT_SESSION_CLAIM_DIGEST_VERSION } from '../../shared/agent-session-host-authority'
+import { PtyWriteUnavailableError } from '../providers/pty-write-unavailable-error'
 
 const isWindowsHost = process.platform === 'win32'
 const posixOnlyIt = isWindowsHost ? it.skip : it
@@ -542,11 +544,11 @@ describe('registerPtyHandlers', () => {
     return writeCall[1] as (event: unknown, args: { id: string; data: string }) => void
   }
 
-  function installDaemonTestProvider() {
+  function installDaemonTestProvider(overrides: Record<string, unknown> = {}) {
     const spawn = vi.fn(async (options: { sessionId?: string }) => ({
       id: options.sessionId ?? 'daemon-pty'
     }))
-    setLocalPtyProvider({
+    const provider = {
       spawn,
       write: vi.fn(),
       resize: vi.fn(),
@@ -568,8 +570,10 @@ describe('registerPtyHandlers', () => {
       listProcesses: vi.fn(async () => []),
       attach: vi.fn(),
       getDefaultShell: vi.fn(),
-      getProfiles: vi.fn()
-    } as never)
+      getProfiles: vi.fn(),
+      ...overrides
+    }
+    setLocalPtyProvider(provider as never)
     return spawn
   }
 
@@ -5687,6 +5691,101 @@ describe('registerPtyHandlers', () => {
       immediate: true,
       keepHistory: false
     })
+  })
+
+  it('reports agent ownership through pty:listSessions so the renderer cannot guess it', async () => {
+    registerPtyHandlers(mainWindow as never)
+    // Why: the renderer's binding map is empty during restore, so agent ownership is the only
+    // positive liveness evidence it has. Dropping it here force-killed live sessions (#8459).
+    const owner = {
+      claim: {
+        digestVersion: AGENT_SESSION_CLAIM_DIGEST_VERSION,
+        keyId: 'key-1',
+        identityDigest: 'a'.repeat(43),
+        worktreeScopeDigest: 'b'.repeat(43),
+        agent: 'codex'
+      },
+      generation: 'gen-1',
+      phase: 'live',
+      ptyId: 'agent-pty',
+      surface: {
+        worktreeId: 'repo::/workspace',
+        tabId: 'tab',
+        leafId: '11111111-1111-4111-8111-111111111111',
+        terminalHandle: 'term_claimed'
+      }
+    }
+    setLocalPtyProvider({
+      spawn: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      shutdown: vi.fn(),
+      sendSignal: vi.fn(),
+      getCwd: vi.fn(),
+      getInitialCwd: vi.fn(),
+      clearBuffer: vi.fn(),
+      acknowledgeDataEvent: vi.fn(),
+      hasChildProcesses: vi.fn(),
+      getForegroundProcess: vi.fn(),
+      serialize: vi.fn(),
+      revive: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      listProcesses: vi.fn(async () => [
+        { id: 'agent-pty', cwd: '/workspace', title: 'codex', agentSessionOwners: [owner] },
+        { id: 'plain-pty', cwd: '/tmp', title: 'zsh' }
+      ]),
+      // Why: this provider serializes claims, so its silence about an owner is authoritative.
+      providesAgentSessionOwnerListings: () => true,
+      attach: vi.fn(),
+      getDefaultShell: vi.fn(),
+      getProfiles: vi.fn()
+    } as never)
+
+    const sessions = (await handlers.get('pty:listSessions')!(null, undefined)) as {
+      id: string
+      agentOwnership: string
+    }[]
+
+    expect(sessions.find((s) => s.id === 'agent-pty')?.agentOwnership).toBe('present')
+    expect(sessions.find((s) => s.id === 'plain-pty')?.agentOwnership).toBe('absent')
+  })
+
+  it('reports unknown ownership when the provider cannot serialize claims', async () => {
+    registerPtyHandlers(mainWindow as never)
+    // Why: a legacy daemon generation or older SSH relay lists no owners for a session that may
+    // have one. Reporting that silence as 'absent' is what let live agent sessions be killed (#8459).
+    setLocalPtyProvider({
+      spawn: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      shutdown: vi.fn(),
+      sendSignal: vi.fn(),
+      getCwd: vi.fn(),
+      getInitialCwd: vi.fn(),
+      clearBuffer: vi.fn(),
+      acknowledgeDataEvent: vi.fn(),
+      hasChildProcesses: vi.fn(),
+      getForegroundProcess: vi.fn(),
+      serialize: vi.fn(),
+      revive: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      listProcesses: vi.fn(async () => [{ id: 'legacy-pty', cwd: '/workspace', title: 'zsh' }]),
+      providesAgentSessionOwnerListings: () => false,
+      attach: vi.fn(),
+      getDefaultShell: vi.fn(),
+      getProfiles: vi.fn()
+    } as never)
+
+    const sessions = (await handlers.get('pty:listSessions')!(null, undefined)) as {
+      id: string
+      agentOwnership: string
+    }[]
+
+    expect(sessions.find((s) => s.id === 'legacy-pty')?.agentOwnership).toBe('unknown')
   })
 
   it('kills app-scoped SSH PTY ids through the parsed provider when ownership is not rebuilt', async () => {
@@ -13351,6 +13450,26 @@ describe('registerPtyHandlers', () => {
       })
     ).toBe(false)
     expect(mockProc.proc.write).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks the renderer to remount when the provider rejects a stale daemon write', async () => {
+    const write = vi.fn(() => {
+      throw new PtyWriteUnavailableError('daemon generation lost')
+    })
+    installDaemonTestProvider({ write })
+    registerPtyHandlers(mainWindow as never)
+    const result = (await handlers.get('pty:spawn')!(null, {
+      cols: 80,
+      rows: 24
+    })) as { id: string }
+    mainWindow.webContents.send.mockClear()
+
+    getPtyWriteListener()(mainWindowIpcEvent, { id: result.id, data: 'x' })
+
+    expect(write).toHaveBeenCalledWith(result.id, 'x')
+    expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:writeUnavailable', {
+      id: result.id
+    })
   })
 
   it('rejects malformed and cross-window pty write IPC before provider writes', async () => {

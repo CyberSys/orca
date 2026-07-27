@@ -60,6 +60,17 @@ import {
   type AgentSessionOwnerBinding
 } from '../shared/agent-session-host-authority'
 
+// Why: only Linux compiles node-pty (no prebuilt), so the build-tools remedy is a closable setup gap
+// there and wrong advice anywhere node-pty ships one. The relay only sees an unloadable binding, never
+// why — a skipped compile and a later Node/ABI flip look identical here — so Linux hedges both causes.
+export function formatNodePtyUnavailableMessage(platform: NodeJS.Platform): string {
+  const remedy =
+    platform === 'linux'
+      ? "node-pty's native binding is not loadable on this host. If it is missing the C/C++ build tools needed to compile node-pty, install make, a C++ compiler, and python3 on the remote host, then reconnect. Otherwise reconnect to reinstall the relay's native modules, and check that the remote Node.js version and architecture match the installed binding."
+      : "node-pty's native binding failed to load on this host. Reconnect to reinstall the relay's native modules; if it persists, check that the remote Node.js version and architecture match the installed binding."
+  return `Remote terminals are unavailable: ${remedy}`
+}
+
 function isMissingNodePtyNativeBinding(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -997,7 +1008,7 @@ export class PtyHandler {
   ): Promise<{ id: string; incarnationId: string }> {
     const pty = await this.loadPty()
     if (!pty) {
-      throw new Error('node-pty is not available on this remote host')
+      throw new Error(formatNodePtyUnavailableMessage(process.platform))
     }
 
     const cols = (params.cols as number) || 80
@@ -1078,7 +1089,7 @@ export class PtyHandler {
       // Why: Windows loads conpty.node only on first spawn, so handle that late binding failure here.
       if (isMissingNodePtyNativeBinding(error)) {
         this.invalidatePtyModuleAfterBindingFailure()
-        throw new Error('node-pty is not available on this remote host')
+        throw new Error(formatNodePtyUnavailableMessage(process.platform))
       }
       throw error
     }

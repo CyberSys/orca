@@ -194,6 +194,12 @@ export class PaneManager {
     return Array.from(this.panes.values()).map(toPublicPane)
   }
 
+  /** Why separate from getPanes: the census runs on the crash path, where
+   *  materializing every public pane view just to read `.length` is waste. */
+  getPaneCount(): number {
+    return this.panes.size
+  }
+
   fitAllPanes(): void {
     fitAllPanesInternal(this.panes)
   }
@@ -208,10 +214,6 @@ export class PaneManager {
 
   refreshAllPanes(): void {
     for (const pane of this.panes.values()) {
-      // Retained contexts repaint on resume without scaling recovery across hidden workspaces.
-      if (pane.webglAttachmentDeferred && pane.webglAddon) {
-        continue
-      }
       try {
         if (pane.terminal.rows > 0) {
           pane.terminal.refresh(0, pane.terminal.rows - 1)
