@@ -17,6 +17,7 @@ export function aiVaultScanIssueResult(args: {
       {
         ...(args.executionHostId ? { executionHostId: args.executionHostId } : {}),
         agent: 'codex',
+        kind: 'host',
         path: args.path,
         message: args.message
       }

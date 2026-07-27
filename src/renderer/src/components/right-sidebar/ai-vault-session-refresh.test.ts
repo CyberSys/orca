@@ -20,6 +20,7 @@ const EMPTY_RESULT: AiVaultListResult = {
 const THROTTLE_MS = 5_000
 
 const listSessionsMock = vi.fn<(args: unknown) => Promise<AiVaultListResult>>()
+const cancelListSessionsMock = vi.fn<() => Promise<void>>()
 
 // Captures the hook's subscription to the main-process window-focus push.
 let windowFocusCallback: (() => void) | null = null
@@ -123,9 +124,14 @@ function lastCallArgs(): unknown {
 beforeEach(() => {
   vi.useFakeTimers()
   listSessionsMock.mockReset().mockResolvedValue(EMPTY_RESULT)
+  cancelListSessionsMock.mockReset().mockResolvedValue()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only window.api shim
   ;(window as any).api = {
-    aiVault: { listSessions: listSessionsMock, onWindowFocused: onWindowFocusedMock }
+    aiVault: {
+      listSessions: listSessionsMock,
+      cancelListSessions: cancelListSessionsMock,
+      onWindowFocused: onWindowFocusedMock
+    }
   }
   resetAiVaultForcedRescanThrottleForTest()
   useAppStore.setState(initialAppState, true)
@@ -178,6 +184,7 @@ describe('useAiVaultSessionRefresh refocus behavior', () => {
 
     await rerenderHook(['/remote/repo'], 'ssh:dev-box')
     expect(listSessionsMock).toHaveBeenCalledTimes(1)
+    expect(cancelListSessionsMock).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       resolveLocal?.({ ...EMPTY_RESULT, scannedAt: '2026-07-01T00:00:01.000Z' })
@@ -254,6 +261,7 @@ describe('useAiVaultSessionRefresh refocus behavior', () => {
     await dispatch(document, 'visibilitychange')
 
     expect(listSessionsMock).toHaveBeenCalledTimes(1)
+    expect(cancelListSessionsMock).toHaveBeenCalledTimes(1)
   })
 
   it('does not raise the loading flag for refocus refreshes', async () => {

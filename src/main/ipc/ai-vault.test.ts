@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getSshFilesystemProvider: vi.fn(),
   getActiveSshAiVaultHostInfo: vi.fn(),
   getActiveSshAiVaultHostInfos: vi.fn(),
+  requestActiveSshAiVaultSessionList: vi.fn(),
   ipcHandle: vi.fn()
 }))
 
@@ -47,7 +48,8 @@ vi.mock('../providers/ssh-filesystem-dispatch', () => ({
 
 vi.mock('./ssh', () => ({
   getActiveSshAiVaultHostInfo: mocks.getActiveSshAiVaultHostInfo,
-  getActiveSshAiVaultHostInfos: mocks.getActiveSshAiVaultHostInfos
+  getActiveSshAiVaultHostInfos: mocks.getActiveSshAiVaultHostInfos,
+  requestActiveSshAiVaultSessionList: mocks.requestActiveSshAiVaultSessionList
 }))
 
 const { _internals, registerAiVaultHandlers } = await import('./ai-vault')
@@ -66,6 +68,7 @@ beforeEach(() => {
     result([session('runtime:remote-server', 'runtime-session')])
   )
   mocks.getSshFilesystemProvider.mockReturnValue(provider)
+  mocks.requestActiveSshAiVaultSessionList.mockResolvedValue(null)
   mocks.getActiveSshAiVaultHostInfo.mockReturnValue(hostInfo('dev-box'))
   mocks.getActiveSshAiVaultHostInfos.mockReturnValue([hostInfo('dev-box')])
 })
@@ -101,11 +104,105 @@ describe('listAiVaultSessions host routing', () => {
     )
   })
 
+  it('uses one target-side relay scan when the SSH relay supports it', async () => {
+    mocks.requestActiveSshAiVaultSessionList.mockResolvedValue(
+      result([session('local', 'remote-session')])
+    )
+
+    const scanned = await _internals.listAiVaultSessions({
+      executionHostScope: 'ssh:dev-box',
+      scopePaths: ['/home/ada/repo']
+    })
+
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith('dev-box', {
+      limit: undefined,
+      scopePaths: ['/home/ada/repo']
+    })
+    expect(mocks.scanRemoteAiVaultSessions).not.toHaveBeenCalled()
+    expect(scanned.sessions[0]).toMatchObject({
+      executionHostId: 'ssh:dev-box',
+      id: expect.stringContaining('ssh:dev-box:')
+    })
+  })
+
+  it('marks oversized project scopes when sending their bounded relay form', async () => {
+    const scopePaths = Array.from({ length: 80 }, (_, index) => `/repo/${index}`)
+    mocks.requestActiveSshAiVaultSessionList.mockResolvedValue(result([]))
+
+    await _internals.listAiVaultSessions({
+      executionHostScope: 'ssh:dev-box',
+      scopePaths
+    })
+
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith('dev-box', {
+      limit: undefined,
+      scopePaths: scopePaths.slice(0, 64),
+      scopePathsTruncated: true
+    })
+  })
+
+  it('does not start a second remote crawl after the relay scan budget expires', async () => {
+    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(
+      new Error('Request "aiVault.listSessions" timed out after 130000ms')
+    )
+
+    const scanned = await _internals.listAiVaultSessions({
+      executionHostScope: 'ssh:dev-box'
+    })
+
+    expect(mocks.scanRemoteAiVaultSessions).not.toHaveBeenCalled()
+    expect(scanned.sessions).toEqual([])
+    expect(scanned.issues[0]?.message).toContain('timed out')
+  })
+
+  it('does not cache a host-level relay failure', async () => {
+    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(
+      new Error('Request "aiVault.listSessions" timed out after 130000ms')
+    )
+
+    await _internals.listAiVaultSessions({ executionHostScope: 'ssh:dev-box' })
+    await _internals.listAiVaultSessions({ executionHostScope: 'ssh:dev-box' })
+
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledTimes(2)
+  })
+
+  it('falls back to the filesystem crawl after a non-timeout relay failure', async () => {
+    mocks.requestActiveSshAiVaultSessionList.mockRejectedValue(
+      new Error('Invalid aiVault.listSessions response')
+    )
+
+    const scanned = await _internals.listAiVaultSessions({
+      executionHostScope: 'ssh:dev-box'
+    })
+
+    expect(mocks.scanRemoteAiVaultSessions).toHaveBeenCalledTimes(1)
+    expect(scanned.sessions).toEqual([expect.objectContaining({ sessionId: 'remote-session' })])
+  })
+
+  it('uses the relay scan without requiring the fallback filesystem provider', async () => {
+    mocks.getSshFilesystemProvider.mockReturnValue(undefined)
+    mocks.requestActiveSshAiVaultSessionList.mockResolvedValue(
+      result([session('local', 'remote-session')])
+    )
+
+    const scanned = await _internals.listAiVaultSessions({
+      executionHostScope: 'ssh:dev-box'
+    })
+
+    expect(scanned.sessions).toHaveLength(1)
+    expect(mocks.scanRemoteAiVaultSessions).not.toHaveBeenCalled()
+  })
+
   it('merges local plus connected SSH targets for all hosts', async () => {
     const result = await _internals.listAiVaultSessions({ executionHostScope: 'all' })
 
     expect(mocks.scanAiVaultSessions).toHaveBeenCalledTimes(1)
     expect(mocks.scanRemoteAiVaultSessions).toHaveBeenCalledTimes(1)
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith(
+      'dev-box',
+      expect.any(Object),
+      expect.objectContaining({ timeoutMs: 3_000 })
+    )
     expect(result.sessions.map((entry) => entry.executionHostId)).toEqual(['ssh:dev-box', 'local'])
   })
 
@@ -205,6 +302,39 @@ describe('listAiVaultSessions host routing', () => {
     expect(mocks.scanAiVaultSessions).toHaveBeenCalledTimes(1)
     expect(mocks.scanRemoteAiVaultSessions).toHaveBeenCalledTimes(1)
   })
+
+  it('threads renderer cancellation into the SSH relay request', async () => {
+    let relaySignal: AbortSignal | undefined
+    mocks.requestActiveSshAiVaultSessionList.mockImplementation(
+      (_targetId, _params, options: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          relaySignal = options.signal
+          options.signal?.addEventListener(
+            'abort',
+            () => {
+              const error = new Error('cancelled')
+              error.name = 'AbortError'
+              reject(error)
+            },
+            { once: true }
+          )
+        })
+    )
+    registerAiVaultHandlers()
+    const event = { sender: { id: 7 } }
+    const pending = getIpcHandler('aiVault:listSessions')(event, {
+      executionHostScope: 'ssh:dev-box',
+      requestToken: 'scan-1'
+    })
+    await vi.waitFor(() => expect(relaySignal).toBeDefined())
+
+    await getIpcHandler('aiVault:cancelListSessions')(event, {
+      requestToken: 'scan-1'
+    })
+
+    expect(relaySignal?.aborted).toBe(true)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
 })
 
 describe('prepareSessionResume IPC', () => {
@@ -276,6 +406,14 @@ function getPrepareSessionResumeHandler(): (
   )
   if (!registration) {
     throw new Error('aiVault:prepareSessionResume was not registered')
+  }
+  return registration[1]
+}
+
+function getIpcHandler(channel: string): (...args: unknown[]) => unknown {
+  const registration = mocks.ipcHandle.mock.calls.find(([registered]) => registered === channel)
+  if (!registration) {
+    throw new Error(`${channel} was not registered`)
   }
   return registration[1]
 }

@@ -195,13 +195,15 @@ function remoteCodexSources(
         codexHome,
         executionHostId: context.executionHostId,
         executionHostPlatform: context.hostPlatform.os,
+        signal: context.signal,
         readIndexedTitle: async (sessionId) =>
           (
             await remoteCodexIndexTitles({
               provider: context.provider,
               codexHome,
               hostPlatform,
-              titleCaches: context.titleCaches
+              titleCaches: context.titleCaches,
+              signal: context.signal
             })
           ).get(sessionId) ?? null
       })

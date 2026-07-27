@@ -1374,6 +1374,7 @@ function createAiVaultApi(): NonNullable<Partial<PreloadApi>['aiVault']> {
         executionHostId
       })
     },
+    cancelListSessions: () => Promise.resolve(),
     prepareSessionResume: (args: AiVaultPrepareSessionResumeArgs) =>
       callRuntimeResult<AiVaultPrepareSessionResumeResult>('aiVault.prepareSessionResume', args),
     // Why: no server-side RPC for subagent transcript listing yet, so report an empty (not erroring) result.

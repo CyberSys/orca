@@ -12,6 +12,7 @@ import type { SshPtyExitCallback } from '../providers/ssh-pty-provider-contract'
 import { isSshPtyIdentityMismatchError, isSshPtyNotFoundError } from '../providers/ssh-pty-errors'
 import { toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
 import { SshFilesystemProvider } from '../providers/ssh-filesystem-provider'
+import { isMethodNotFoundError } from './ssh-filesystem-stream-reader'
 import { SshGitProvider } from '../providers/ssh-git-provider'
 import { agentHookServer } from '../agent-hooks/server'
 import { isAgentStatusHooksEnabled } from '../agent-hooks/managed-agent-hook-controls'
@@ -66,6 +67,11 @@ import type { Store } from '../persistence'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import { runRemoteOrcaCli } from './ssh-remote-orca-cli'
 import { toSshExecutionHostId, type ExecutionHostId } from '../../shared/execution-host'
+import {
+  SSH_AI_VAULT_LIST_SESSIONS_METHOD,
+  SSH_AI_VAULT_LIST_SESSIONS_TIMEOUT_MS,
+  type SshAiVaultRelayListParams
+} from '../../shared/ssh-ai-vault-relay'
 import { isTerminalLeafId, makePaneKey } from '../../shared/stable-pane-id'
 import { isValidTerminalTabId } from '../../shared/terminal-tab-id'
 
@@ -149,6 +155,7 @@ export class SshRelaySession {
   private currentConnection: SshConnection | null = null
   private hostPlatform: RemoteHostPlatform | null = null
   private remoteCliBridgeEnv: RemoteCliBridgeEnv | null = null
+  private aiVaultListMethodSupported: boolean | null = null
   private forwardedReattachReplayByPty = new Map<string, ForwardedReplayFingerprint>()
   private pendingPtyReattaches = new Map<string, PendingPtyReattach>()
 
@@ -228,6 +235,33 @@ export class SshRelaySession {
     }
   }
 
+  async requestAiVaultSessionList(
+    params: SshAiVaultRelayListParams,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  ): Promise<unknown | null> {
+    if (this.aiVaultListMethodSupported === false) {
+      return null
+    }
+    const mux = this.mux
+    if (!mux || mux.isDisposed() || this._state !== 'ready') {
+      throw new Error('SSH relay is not ready')
+    }
+    try {
+      const result = await mux.request(SSH_AI_VAULT_LIST_SESSIONS_METHOD, params, {
+        signal: options.signal,
+        timeoutMs: options.timeoutMs ?? SSH_AI_VAULT_LIST_SESSIONS_TIMEOUT_MS
+      })
+      this.aiVaultListMethodSupported = true
+      return result
+    } catch (error) {
+      if (isMethodNotFoundError(error)) {
+        this.aiVaultListMethodSupported = false
+        return null
+      }
+      throw error
+    }
+  }
+
   getPortScanner(): PortScanner | null {
     return this.portScanner
   }
@@ -246,6 +280,7 @@ export class SshRelaySession {
       throw new Error(`Cannot establish relay session in state: ${this._state}`)
     }
     this._state = 'deploying'
+    this.aiVaultListMethodSupported = null
     this.currentConnection = conn
 
     try {
@@ -339,6 +374,7 @@ export class SshRelaySession {
     this.abortController = abortController
 
     this._state = 'reconnecting'
+    this.aiVaultListMethodSupported = null
     this.currentConnection = conn
 
     // Why: stop scanning before teardownProviders so the poll timer can't fire against a disposed multiplexer.

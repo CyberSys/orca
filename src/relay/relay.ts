@@ -32,6 +32,7 @@ import { ExternalAutomationsHandler } from './external-automations-handler'
 import { PortScanHandler } from './port-scan-handler'
 import { AgentExecHandler } from './agent-exec-handler'
 import { WorkspaceSessionHandler } from './workspace-session-handler'
+import { AiVaultHandler } from './ai-vault-handler'
 import { endpointDirForRelaySocket, RelayAgentHookServer } from './agent-hook-server'
 import { PluginOverlayManager, getRelayPiStatusExtensionPath } from './plugin-overlay'
 import {
@@ -427,6 +428,9 @@ async function main(): Promise<void> {
 
   const _workspaceSessionHandler = new WorkspaceSessionHandler(dispatcher)
   void _workspaceSessionHandler
+
+  const _aiVaultHandler = new AiVaultHandler(dispatcher)
+  void _aiVaultHandler
 
   dispatcher.onRequest('orca.cli', async (params, context) => {
     return await dispatcher.requestAnyClient('orca.cli', params, {

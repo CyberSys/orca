@@ -6,6 +6,7 @@ import { SshConnectionStore } from '../ssh/ssh-connection-store'
 import { SshConnectionManager, type SshConnectionCallbacks } from '../ssh/ssh-connection'
 import type { SshChannelMultiplexer } from '../ssh/ssh-channel-multiplexer'
 import { SshRelaySession, type SshRelayAiVaultHostInfo } from '../ssh/ssh-relay-session'
+import type { SshAiVaultRelayListParams } from '../../shared/ssh-ai-vault-relay'
 import { SshPortForwardManager } from '../ssh/ssh-port-forward'
 import type {
   DetectedPort,
@@ -151,6 +152,21 @@ export function getActiveSshAiVaultHostInfos(): SshRelayAiVaultHostInfo[] {
     const info = session.getAiVaultHostInfo()
     return info ? [info] : []
   })
+}
+
+export async function requestActiveSshAiVaultSessionList(
+  targetId: string,
+  params: SshAiVaultRelayListParams,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<unknown | null> {
+  if (isRuntimeOwnedSshTargetId(targetId)) {
+    return null
+  }
+  const session = activeSessions.get(targetId)
+  if (!session) {
+    throw new Error('SSH relay is not ready')
+  }
+  return session.requestAiVaultSessionList(params, options)
 }
 
 async function detachActiveSshSession(targetId: string): Promise<void> {

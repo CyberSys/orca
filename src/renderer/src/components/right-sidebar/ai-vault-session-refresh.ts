@@ -41,6 +41,7 @@ export function useAiVaultSessionRefresh(
   const [scanResult, setScanResult] = useState<AiVaultListResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const requestTokenRef = useRef(crypto.randomUUID())
   const refreshIdRef = useRef(0)
   const refreshInFlightRef = useRef(false)
   const pendingRefreshRef = useRef(false)
@@ -93,7 +94,8 @@ export function useAiVaultSessionRefresh(
           limit: SESSION_LIMIT,
           scopePaths: scopePathsRef.current,
           executionHostScope: hostScope,
-          force: args.force
+          force: args.force,
+          requestToken: requestTokenRef.current
         })
         if (!mountedRef.current || refreshIdRef.current !== refreshId) {
           return
@@ -167,10 +169,14 @@ export function useAiVaultSessionRefresh(
 
   useEffect(() => {
     mountedRef.current = true
+    const requestToken = requestTokenRef.current
     return () => {
       mountedRef.current = false
       refreshIdRef.current += 1
       refreshInFlightRef.current = false
+      void window.api.aiVault.cancelListSessions({
+        requestToken
+      })
       if (forcedRescanTimerRef.current !== null) {
         clearTimeout(forcedRescanTimerRef.current)
         forcedRescanTimerRef.current = null
@@ -183,6 +189,11 @@ export function useAiVaultSessionRefresh(
   // re-entering the panel shows sessions newer than the 15s cache; when the
   // throttle denies it, paint from cache now and catch up once it frees.
   useEffect(() => {
+    if (refreshInFlightRef.current) {
+      void window.api.aiVault.cancelListSessions({
+        requestToken: requestTokenRef.current
+      })
+    }
     const force = consumeForcedRescanBudget()
     void refresh({ force })
     if (!force) {

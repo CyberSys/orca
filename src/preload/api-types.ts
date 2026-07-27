@@ -846,6 +846,7 @@ export type OpenCodeUsageApi = {
 
 export type AiVaultApi = {
   listSessions: (args?: AiVaultListArgs) => Promise<AiVaultListResult>
+  cancelListSessions: (args: { requestToken: string }) => Promise<void>
   prepareSessionResume: (
     args: AiVaultPrepareSessionResumeArgs
   ) => Promise<AiVaultPrepareSessionResumeResult>

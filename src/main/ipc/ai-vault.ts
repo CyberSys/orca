@@ -7,11 +7,11 @@ import {
   resetAiVaultSessionListCacheForTests,
   type AiVaultSessionSources
 } from '../ai-vault/cached-session-list'
-import { scanRemoteAiVaultSessions } from '../ai-vault/remote-session-scanner'
 import { listClaudeSubagentSessions } from '../ai-vault/session-scanner-claude-subagents'
 import { claudeProjectsRootDirs } from '../ai-vault/session-scanner-source-discovery'
 import { isPathInsideOrEqual } from '../../shared/cross-platform-path'
 import { aiVaultScanIssueResult, mergeAiVaultListResults } from '../ai-vault/session-list-results'
+import { scanSshAiVaultSessions } from '../ai-vault/ssh-session-list'
 import type {
   AiVaultListArgs,
   AiVaultListResult,
@@ -24,17 +24,14 @@ import {
   normalizeExecutionHostScope,
   parseExecutionHostId,
   toRuntimeExecutionHostId,
-  toSshExecutionHostId,
   type ExecutionHostScope
 } from '../../shared/execution-host'
-import {
-  getSshFilesystemProvider,
-  SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE
-} from '../providers/ssh-filesystem-dispatch'
-import { getActiveSshAiVaultHostInfo, getActiveSshAiVaultHostInfos } from './ssh'
+import { getActiveSshAiVaultHostInfos } from './ssh'
+import { createSenderScopedRequestCancellations } from './sender-scoped-request-cancellation'
 
 const AI_VAULT_CACHE_TTL_MS = 15_000
 const AI_VAULT_ALL_HOST_RUNTIME_TIMEOUT_MS = 3_000
+const AI_VAULT_ALL_HOST_SSH_TIMEOUT_MS = 3_000
 
 type AiVaultHandlerOptions = AiVaultSessionSources &
   AiVaultResumeHandlerOptions & {
@@ -65,8 +62,12 @@ let cachedList: CachedAiVaultList | null = null
 let inflightList: Promise<AiVaultListResult> | null = null
 let inflightKey: string | null = null
 let handlerOptions: AiVaultHandlerOptions = {}
+const listCancellations = createSenderScopedRequestCancellations()
 
-async function listAiVaultSessions(args?: AiVaultListArgs): Promise<AiVaultListResult> {
+async function listAiVaultSessions(
+  args?: AiVaultListArgs,
+  options: { signal?: AbortSignal } = {}
+): Promise<AiVaultListResult> {
   const executionHostScope = normalizeExecutionHostScope(
     args?.executionHostScope ?? LOCAL_EXECUTION_HOST_ID
   )
@@ -89,34 +90,38 @@ async function listAiVaultSessions(args?: AiVaultListArgs): Promise<AiVaultListR
   if (args?.force !== true && cachedList?.key === key && cachedList.expiresAt > now) {
     return cachedList.result
   }
-  if (inflightList && inflightKey === key) {
+  if (inflightList && inflightKey === key && !options.signal) {
     return inflightList
   }
 
   inflightKey = key
-  inflightList = scanAiVaultSessionsByHostScope(args, executionHostScope)
+  const pending = scanAiVaultSessionsByHostScope(args, executionHostScope, options.signal)
     .then((result) => {
-      cachedList = {
-        key,
-        result,
-        expiresAt: Date.now() + AI_VAULT_CACHE_TTL_MS
+      if (!result.issues.some((issue) => issue.kind === 'host')) {
+        cachedList = {
+          key,
+          result,
+          expiresAt: Date.now() + AI_VAULT_CACHE_TTL_MS
+        }
       }
       return result
     })
     .finally(() => {
       // Only clear tracking if it still refers to this request: a concurrent
       // different-scope scan may have replaced it and must stay dedupable.
-      if (inflightKey === key) {
+      if (inflightKey === key && inflightList === pending) {
         inflightKey = null
         inflightList = null
       }
     })
-  return inflightList
+  inflightList = pending
+  return pending
 }
 
 async function scanAiVaultSessionsByHostScope(
   args: AiVaultListArgs | undefined,
-  executionHostScope: ExecutionHostScope
+  executionHostScope: ExecutionHostScope,
+  signal?: AbortSignal
 ): Promise<AiVaultListResult> {
   if (executionHostScope === 'all') {
     const runtimeHosts = getActiveRuntimeAiVaultHostInfosResult()
@@ -125,7 +130,10 @@ async function scanAiVaultSessionsByHostScope(
       await Promise.all([
         scanLocalAiVaultSessions(args),
         ...getActiveSshAiVaultHostInfos().map((hostInfo) =>
-          scanSshAiVaultSessions(hostInfo.targetId, args)
+          scanSshAiVaultSessions(hostInfo.targetId, args, {
+            signal,
+            timeoutMs: AI_VAULT_ALL_HOST_SSH_TIMEOUT_MS
+          })
         ),
         ...runtimeHosts.hostInfos.map((hostInfo) =>
           scanRuntimeAiVaultSessions(hostInfo, args, {
@@ -140,7 +148,7 @@ async function scanAiVaultSessionsByHostScope(
 
   const parsed = parseExecutionHostId(executionHostScope)
   if (parsed?.kind === 'ssh') {
-    return scanSshAiVaultSessions(parsed.targetId, args)
+    return scanSshAiVaultSessions(parsed.targetId, args, { signal })
   }
   if (parsed?.kind === 'runtime') {
     return scanRuntimeAiVaultSessions(
@@ -237,42 +245,6 @@ async function scanLocalAiVaultSessions(args?: AiVaultListArgs): Promise<AiVault
   })
 }
 
-async function scanSshAiVaultSessions(
-  targetId: string,
-  args?: AiVaultListArgs
-): Promise<AiVaultListResult> {
-  const executionHostId = toSshExecutionHostId(targetId)
-  const hostInfo = getActiveSshAiVaultHostInfo(targetId)
-  const provider = getSshFilesystemProvider(targetId)
-  if (!hostInfo || !provider) {
-    return sshScanIssueResult({
-      executionHostId,
-      targetId,
-      message: SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE
-    })
-  }
-  return scanRemoteAiVaultSessions({
-    provider,
-    executionHostId: hostInfo.executionHostId,
-    remoteHome: hostInfo.remoteHome,
-    hostPlatform: hostInfo.hostPlatform,
-    limit: args?.limit,
-    scopePaths: args?.scopePaths
-  })
-}
-
-function sshScanIssueResult(args: {
-  executionHostId: `ssh:${string}`
-  targetId: string
-  message: string
-}): AiVaultListResult {
-  return aiVaultScanIssueResult({
-    executionHostId: args.executionHostId,
-    path: args.targetId,
-    message: args.message
-  })
-}
-
 export function registerAiVaultHandlers(options: AiVaultHandlerOptions = {}): void {
   handlerOptions = options
   // Why: configure the SAME shared cache module the runtime RPC method uses so
@@ -280,8 +252,25 @@ export function registerAiVaultHandlers(options: AiVaultHandlerOptions = {}): vo
   // WSL injection. The runtime also configures these sources from its deps
   // (serve-mode reachable); this desktop path supplies the same source.
   configureAiVaultSessionSources(options)
-  ipcMain.handle('aiVault:listSessions', (_event, args?: AiVaultListArgs) =>
-    listAiVaultSessions(args)
+  ipcMain.handle('aiVault:listSessions', async (event, args?: AiVaultListArgs) => {
+    const requestToken =
+      typeof args?.requestToken === 'string' && args.requestToken.length <= 128
+        ? args.requestToken
+        : undefined
+    const controller = listCancellations.begin(event, requestToken)
+    try {
+      return await listAiVaultSessions(args, { signal: controller?.signal })
+    } finally {
+      listCancellations.finish(event, requestToken, controller)
+    }
+  })
+  ipcMain.handle(
+    'aiVault:cancelListSessions',
+    (event, args: { requestToken?: string } | undefined): void => {
+      if (typeof args?.requestToken === 'string' && args.requestToken.length <= 128) {
+        listCancellations.cancel(event, args.requestToken)
+      }
+    }
   )
   registerAiVaultResumeHandler(options)
   ipcMain.handle(

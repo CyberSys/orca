@@ -42,6 +42,7 @@ import {
 } from './ai-vault-host-scope'
 import { usePersistedAiVaultViewOptions } from './use-persisted-ai-vault-view-options'
 import { AgentSessionContinuationDialog } from '@/components/agent-session-continuation/AgentSessionContinuationDialog'
+import { blockingAiVaultScanIssue } from './ai-vault-scan-issue-state'
 
 export default function AiVaultPanel(): React.JSX.Element {
   const activeWorktreeId = useActiveWorktreeId()
@@ -136,6 +137,7 @@ export default function AiVaultPanel(): React.JSX.Element {
     scopePaths,
     executionHostScope
   )
+  const blockingScanIssue = blockingAiVaultScanIssue(scanResult)
   const sessionProjectById = useMemo(
     () =>
       buildAiVaultProjectContext({
@@ -332,7 +334,11 @@ export default function AiVaultPanel(): React.JSX.Element {
         </div>
       ) : null}
 
-      {scanResult && scanResult.issues.length > 0 ? (
+      {blockingScanIssue ? (
+        <div className="border-b border-sidebar-border px-3 py-2 text-xs text-destructive">
+          {blockingScanIssue.message}
+        </div>
+      ) : scanResult && scanResult.issues.length > 0 ? (
         <div className="border-b border-sidebar-border px-3 py-1.5 text-[11px] text-muted-foreground">
           {translate(
             'auto.components.right.sidebar.AiVaultPanel.transcriptsSkipped',
