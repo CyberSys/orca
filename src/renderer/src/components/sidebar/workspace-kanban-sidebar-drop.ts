@@ -4,6 +4,10 @@ import type {
   Worktree,
   WorktreeMeta
 } from '../../../../shared/types'
+import {
+  parseWorkspaceLaneFullIds,
+  resolveFullLaneDropIndex
+} from './workspace-kanban-filtered-drop-index'
 import { getWorkspaceStatus } from './workspace-status'
 import {
   buildManualOrderUpdatesForGroupDrop,
@@ -44,6 +48,21 @@ export function isWorkspaceKanbanSidebarDropPointInBoard(x: number, y: number): 
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
 }
 
+// Mirrors getCardDropTarget's card scan so both sides share one index space.
+function getRenderedLaneCardIds(lane: HTMLElement): string[] {
+  return Array.from(lane.querySelectorAll<HTMLElement>(CARD_SELECTOR))
+    .filter((card) => card.offsetParent !== null)
+    .flatMap((card) => card.dataset.workspaceBoardCardId ?? [])
+}
+
+// Why: board search hides non-matching cards, so the rendered card scan is a
+// filtered lane. Lanes publish their full membership for exactly this reader.
+function getLaneFullWorktreeIds(lane: HTMLElement): string[] {
+  return (
+    parseWorkspaceLaneFullIds(lane.dataset.workspaceLaneFullIds) ?? getRenderedLaneCardIds(lane)
+  )
+}
+
 function getStatusDropTargetElement(
   board: HTMLElement,
   status: WorkspaceStatus
@@ -80,14 +99,7 @@ export function getWorkspaceKanbanSidebarDropGroups(): WorktreeDragGroup[] {
     if (!status) {
       return []
     }
-    return [
-      {
-        key: status,
-        worktreeIds: Array.from(lane.querySelectorAll<HTMLElement>(CARD_SELECTOR)).flatMap(
-          (card) => card.dataset.workspaceBoardCardId ?? []
-        )
-      }
-    ]
+    return [{ key: status, worktreeIds: getLaneFullWorktreeIds(lane) }]
   })
 }
 
@@ -99,7 +111,24 @@ export function getWorkspaceKanbanSidebarDropTarget(
   if (!board) {
     return { status: null, isPinDrop: false, dropIndex: 0 }
   }
-  return getCardDropTarget(board, x, y)
+  const target = getCardDropTarget(board, x, y)
+  if (!target.status) {
+    return target
+  }
+  const lane = getStatusDropTargetElement(board, target.status)
+  if (!lane) {
+    return target
+  }
+  // Why: getCardDropTarget counts rendered cards, but the groups above are the
+  // full lane. Committing the two together would interpolate the wrong rank.
+  return {
+    ...target,
+    dropIndex: resolveFullLaneDropIndex({
+      fullLaneIds: getLaneFullWorktreeIds(lane),
+      renderedIds: getRenderedLaneCardIds(lane),
+      filteredDropIndex: target.dropIndex
+    })
+  }
 }
 
 export function updateWorkspaceKanbanSidebarDropTargetVisual(args: {

@@ -247,6 +247,28 @@ describe('workspace kanban sidebar drop DOM bridge', () => {
     ])
   })
 
+  it('prefers the published full lane membership over the rendered card scan', () => {
+    const { lane } = appendBoard()
+    lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
+    setElementFromPoint(lane)
+
+    expect(getWorkspaceKanbanSidebarDropGroups()).toEqual([
+      { key: 'doing', worktreeIds: ['doing-x', 'doing-a', 'doing-y', 'doing-b'] }
+    ])
+  })
+
+  it('translates the rendered drop index onto the full lane', () => {
+    const { lane } = appendBoard()
+    lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
+    setElementFromPoint(lane)
+
+    // Rendered index 1 means "before doing-b", which is index 3 in the full lane.
+    expect(getWorkspaceKanbanSidebarDropTarget(24, 60)).toMatchObject({
+      status: 'doing',
+      dropIndex: 3
+    })
+  })
+
   it('marks and clears the external board hover target', () => {
     const { lane } = appendBoard()
     setElementFromPoint(lane)

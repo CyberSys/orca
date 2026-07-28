@@ -4349,7 +4349,8 @@
         },
         "WorkspaceKanbanStatusLane": {
           "8ad104642b": "Vacío",
-          "3611d1ae7f": "Cambiar tamaño de columnas del tablero de espacios de trabajo"
+          "3611d1ae7f": "Cambiar tamaño de columnas del tablero de espacios de trabajo",
+          "2df01a03ff": "No matches"
         },
         "WorkspaceStatusAppearancePopover": {
           "514be2f569": "Establecer color de {{value0}} en {{value1}}",
@@ -4985,6 +4986,13 @@
         "WorktreeDeveloperMenu": {
           "developer": "Developer",
           "parkTerminal": "Park terminal"
+        },
+        "WorkspaceKanbanSearchField": {
+          "bdb753c78d": "No workspaces match",
+          "4d96c209d6": "{{value0}} of {{value1}} workspaces match",
+          "c0cd6bdf6c": "Search workspaces",
+          "49c266baaa": "Search",
+          "3b7ea51793": "Clear search"
         }
       },
       "shared": {

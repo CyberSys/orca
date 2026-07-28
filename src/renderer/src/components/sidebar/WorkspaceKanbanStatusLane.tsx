@@ -14,12 +14,16 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import WorkspaceKanbanCard from './WorkspaceKanbanCard'
+import { serializeWorkspaceLaneFullIds } from './workspace-kanban-filtered-drop-index'
 import { getWorkspaceStatusVisualMeta } from './workspace-status'
 import { translate } from '@/i18n/i18n'
 
 type WorkspaceKanbanStatusLaneProps = {
   status: WorkspaceStatusDefinition
   items: readonly Worktree[]
+  totalCount?: number
+  hasQuery?: boolean
+  fullWorktreeIds?: readonly string[]
   repoMap: Map<string, Repo>
   activeWorktreeId: string | null
   columnWidth: number
@@ -47,6 +51,9 @@ type WorkspaceKanbanStatusLaneProps = {
 export default function WorkspaceKanbanStatusLane({
   status,
   items,
+  totalCount,
+  hasQuery = false,
+  fullWorktreeIds,
   repoMap,
   activeWorktreeId,
   columnWidth,
@@ -89,6 +96,11 @@ export default function WorkspaceKanbanStatusLane({
     <section
       data-workspace-status-drop-target=""
       data-workspace-status={status.id}
+      // Why: sidebar→board drops read lane membership straight out of the DOM,
+      // where a search query would otherwise leave them only the rendered cards.
+      data-workspace-lane-full-ids={serializeWorkspaceLaneFullIds(
+        fullWorktreeIds ?? items.map((worktree) => worktree.id)
+      )}
       data-contextual-tour-target={
         status.id === 'completed' ? 'workspace-board-done-lane' : undefined
       }
@@ -140,7 +152,7 @@ export default function WorkspaceKanbanStatusLane({
             {status.label}
           </div>
           <div className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
-            {items.length}
+            {hasQuery ? `${items.length} / ${totalCount ?? items.length}` : items.length}
           </div>
         </div>
         <Tooltip>
@@ -180,7 +192,12 @@ export default function WorkspaceKanbanStatusLane({
           </div>
         ) : (
           <div className="flex h-20 items-center justify-center rounded-md border border-dashed border-border/70 text-[11px] text-muted-foreground">
-            {translate('auto.components.sidebar.WorkspaceKanbanStatusLane.8ad104642b', 'Empty')}
+            {hasQuery
+              ? translate(
+                  'auto.components.sidebar.WorkspaceKanbanStatusLane.2df01a03ff',
+                  'No matches'
+                )
+              : translate('auto.components.sidebar.WorkspaceKanbanStatusLane.8ad104642b', 'Empty')}
           </div>
         )}
         <Tooltip>
