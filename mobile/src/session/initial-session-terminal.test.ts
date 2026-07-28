@@ -8,6 +8,7 @@ function baseInput(
   overrides: Partial<InitialSessionTerminalAutoCreateInput> = {}
 ): InitialSessionTerminalAutoCreateInput {
   return {
+    newlyCreatedWorkspace: true,
     connected: true,
     tabsLoaded: true,
     visibleTabCount: 0,
@@ -26,6 +27,7 @@ function baseInput(
  * closed tab and nulls the active handle.
  */
 class SessionRouteState {
+  newlyCreatedWorkspace = true
   tabsLoaded = false
   tabIds: string[] = []
   activeHandle: string | null = null
@@ -48,6 +50,7 @@ class SessionRouteState {
 
   gate(): boolean {
     return shouldAutoCreateInitialSessionTerminal({
+      newlyCreatedWorkspace: this.newlyCreatedWorkspace,
       connected: true,
       tabsLoaded: this.tabsLoaded,
       visibleTabCount: this.tabIds.length,
@@ -76,6 +79,34 @@ describe('shouldAutoCreateInitialSessionTerminal', () => {
     expect(route.activeHandle).toBeNull()
     // Emptiness that follows a populated list is a close, not a cold hydrate.
     expect(route.gate()).toBe(false)
+  })
+
+  it('does not re-create after the consumed creation route remounts empty', () => {
+    const creationRoute = new SessionRouteState()
+    creationRoute.applySessionTabs([])
+    expect(creationRoute.gate()).toBe(true)
+    creationRoute.newlyCreatedWorkspace = false
+    creationRoute.autoCreatedForWorktree = true
+    creationRoute.applySessionTabs(['tab-1'])
+    creationRoute.closeSessionTab('tab-1')
+    expect(creationRoute.gate()).toBe(false)
+
+    const reopenedRoute = new SessionRouteState()
+    reopenedRoute.newlyCreatedWorkspace = creationRoute.newlyCreatedWorkspace
+    reopenedRoute.applySessionTabs([])
+    expect(reopenedRoute.gate()).toBe(false)
+  })
+
+  it('does not create from stale empty state while switching ordinary workspace routes', () => {
+    expect(
+      shouldAutoCreateInitialSessionTerminal(
+        baseInput({
+          newlyCreatedWorkspace: false,
+          tabsLoaded: true,
+          visibleTabCount: 0
+        })
+      )
+    ).toBe(false)
   })
 
   it('does not re-create when the host drops every tab mid-session', () => {

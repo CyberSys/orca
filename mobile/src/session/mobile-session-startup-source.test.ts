@@ -23,35 +23,44 @@ function sliceBetween(startPattern: string, endPattern: string): string {
 }
 
 describe('mobile session startup', () => {
-  it('auto-creates one terminal for an initially empty connected session', () => {
-    expect(source).toContain('const initialEmptySessionAutoCreateRef = useRef<string | null>(null)')
-    expect(source).toContain('initialEmptySessionAutoCreateRef.current = null')
+  it('auto-creates one terminal for a newly created empty session', () => {
+    expect(source).toContain('useWorktreeSessionTabsLoaded(worktreeId)')
+    expect(source).toContain(
+      'initialSessionAutoCreateRef.current = createInitialSessionAutoCreateState()'
+    )
 
     const autoCreateCall = sliceBetween(
       'useInitialSessionTerminalAutoCreate({',
       'const connectionVerdict ='
     )
-    expect(autoCreateCall).toContain('autoCreatedForWorktreeRef: initialEmptySessionAutoCreateRef')
+    expect(autoCreateCall).toContain('stateRef: initialSessionAutoCreateRef')
+    expect(autoCreateCall).toContain(
+      'consumeCreationRoute: () => router.setParams({ created: undefined })'
+    )
+    expect(autoCreateCall).toContain("newlyCreatedWorkspace: created === '1'")
     expect(autoCreateCall).toContain('visibleTabCount: visibleTabs.length')
     expect(autoCreateCall).toContain('createTerminal: () => void handleCreateTerminal()')
 
     expect(autoCreateHookSource).toContain('shouldAutoCreateInitialSessionTerminal({')
-    expect(autoCreateHookSource).toContain('autoCreatedForWorktreeRef.current === worktreeId')
-    expect(autoCreateHookSource).toContain('autoCreatedForWorktreeRef.current = worktreeId')
+    expect(autoCreateHookSource).toContain('stateRef.current.autoCreatedForWorktree === worktreeId')
+    expect(autoCreateHookSource).toContain('stateRef.current.autoCreatedForWorktree = worktreeId')
+    expect(autoCreateHookSource).toContain('newlyCreatedWorkspace && terminalsLoaded')
+    expect(autoCreateHookSource).toContain('consumeCreationRouteRef.current()')
     expect(autoCreateHookSource).toContain('createTerminalRef.current()')
   })
 
   it('arms the auto-create only until the route has published a tab (#9717)', () => {
     // Emptiness after a populated list is a close, not a cold hydrate.
-    expect(source).toContain('sawSessionTabsRef.current ||= nextTabs.length > 0')
-    expect(source).toContain('sawSessionTabsRef.current = false')
+    expect(source).toContain(
+      'initialSessionAutoCreateRef.current.sawSessionTabs ||= nextTabs.length > 0'
+    )
 
     const autoCreateCall = sliceBetween(
       'useInitialSessionTerminalAutoCreate({',
       'const connectionVerdict ='
     )
-    expect(autoCreateCall).toContain('sawSessionTabsRef')
-    expect(autoCreateHookSource).toContain('sawSessionTabs: sawSessionTabsRef.current')
+    expect(autoCreateCall).toContain('stateRef: initialSessionAutoCreateRef')
+    expect(autoCreateHookSource).toContain('sawSessionTabs: stateRef.current.sawSessionTabs')
   })
 
   it('delegates stream ownership while retaining the exact terminal polling cadence', () => {

@@ -198,7 +198,11 @@ import {
   confirmsMirroredTabSelection,
   type AppliedSnapshotMarker
 } from '../../../../src/session/session-tab-snapshot-gate'
-import { useInitialSessionTerminalAutoCreate } from '../../../../src/session/use-initial-session-terminal-autocreate'
+import {
+  createInitialSessionAutoCreateState,
+  useInitialSessionTerminalAutoCreate,
+  useWorktreeSessionTabsLoaded
+} from '../../../../src/session/use-initial-session-terminal-autocreate'
 import {
   buildMarkdownDiskFallbackDoc,
   shouldReadMarkdownFromDiskAfterReadTabFailure
@@ -891,7 +895,7 @@ export default function SessionScreen() {
   const appliedSessionTabsRevisionRef = useRef(0)
   // Why: after an optimistic close, suppress the tab (with expiry) until the publisher confirms, so an in-flight snapshot can't flash it back.
   const closedTabTombstonesRef = useRef<Map<string, number>>(new Map())
-  const [terminalsLoaded, setTerminalsLoaded] = useState(false)
+  const [terminalsLoaded, setTerminalsLoaded] = useWorktreeSessionTabsLoaded(worktreeId)
   const [input, setInput] = useState('')
   // Why: baseline terminal zoom reloaded on focus so a Settings → Terminal change applies in place (panes stay mounted).
   const [terminalTextScale, setTerminalTextScale] = useState(1)
@@ -1033,9 +1037,7 @@ export default function SessionScreen() {
   // Why: route the terminal URL tap through a ref so it runs the current handleCreateBrowser closure (the memoized one may hold a null-client render).
   const handleCreateBrowserRef = useRef<((rawUrl?: string) => Promise<boolean>) | null>(null)
 
-  const initialEmptySessionAutoCreateRef = useRef<string | null>(null)
-  // Why: emptiness after a populated list is a close, not a cold hydrate — see initial-session-terminal.
-  const sawSessionTabsRef = useRef(false)
+  const initialSessionAutoCreateRef = useRef(createInitialSessionAutoCreateState())
   const markdownSaveSeqRef = useRef<Map<string, number>>(new Map())
   const markdownSaveInFlightRef = useRef<Set<string>>(new Set())
   const subscribeSeqRef = useRef<Map<string, number>>(new Map())
@@ -1777,7 +1779,7 @@ export default function SessionScreen() {
         nextTabs = [...orphanedDraftTabs, ...nextTabs]
       }
       sessionTabsRef.current = nextTabs
-      sawSessionTabsRef.current ||= nextTabs.length > 0
+      initialSessionAutoCreateRef.current.sawSessionTabs ||= nextTabs.length > 0
       // Why: subscribe snapshots often repeat identical payloads; skip re-set to avoid a subscription teardown/replay loop.
       setSessionTabs((prev) => (mobileSessionTabsEqual(prev, nextTabs) ? prev : nextTabs))
       const terminalTabs = getTerminalRecordsFromSessionTabs(nextTabs)
@@ -2636,8 +2638,7 @@ export default function SessionScreen() {
     pendingActiveTerminalHandleRef.current = null
     pendingBrowserFocusPageIdRef.current = null
     pendingTerminalActivationAttemptRef.current = null
-    initialEmptySessionAutoCreateRef.current = null
-    sawSessionTabsRef.current = false
+    initialSessionAutoCreateRef.current = createInitialSessionAutoCreateState()
     terminalDiagnosticsRef.current.resetRoute()
     appliedSnapshotMarkerRef.current = { epoch: null, version: -1 }
     closedTabTombstonesRef.current.clear()
@@ -4232,17 +4233,18 @@ export default function SessionScreen() {
   const showEmptyState =
     connState === 'connected' && terminalsLoaded && visibleTabs.length === 0 && !activeHandle
 
-  // Why: a sleeping/new workspace can hydrate with zero tabs; create the first terminal once so mobile isn't blank.
+  // Why: a newly created workspace can hydrate with zero tabs before its first terminal exists.
   useInitialSessionTerminalAutoCreate({
     client,
+    newlyCreatedWorkspace: created === '1',
     connState,
     terminalsLoaded,
     visibleTabCount: visibleTabs.length,
     activeHandle,
     createInFlight: creating || creatingBrowser || creatingMarkdown,
-    sawSessionTabsRef,
-    autoCreatedForWorktreeRef: initialEmptySessionAutoCreateRef,
+    stateRef: initialSessionAutoCreateRef,
     worktreeId,
+    consumeCreationRoute: () => router.setParams({ created: undefined }),
     createTerminal: () => void handleCreateTerminal()
   })
 
