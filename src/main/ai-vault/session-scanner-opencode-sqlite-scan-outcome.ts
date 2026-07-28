@@ -5,7 +5,10 @@ import type {
   OpenCodeSqliteScanContext,
   OpenCodeSqliteScanMetrics
 } from './session-scanner-opencode-sqlite-scan-context'
-import { noteOpenCodeSqliteScanProgress } from './session-scanner-opencode-sqlite-scan-cooldown'
+import {
+  noteOpenCodeSqliteScanHardFailure,
+  noteOpenCodeSqliteScanProgress
+} from './session-scanner-opencode-sqlite-scan-cooldown'
 import type { SessionFileCandidate, SessionFileDiscovery } from './session-scanner-types'
 
 export function recordOpenCodeSqliteScanOutcome(args: {
@@ -34,6 +37,14 @@ export function recordOpenCodeSqliteScanOutcome(args: {
   if (message) {
     args.issues.push({ agent: 'opencode', path: 'opencode.db', message })
   }
+  // Why: a deadline expiry normally means partial progress worth resuming, so it
+  // does not back off. But a scan that ran its whole budget without a single
+  // worker answer cached nothing, and the next scan would burn the same budget
+  // again — that is a hard failure whichever limiter happened to fire first.
+  if (metrics.terminationReason === 'deadline' && !metrics.workerAnswered) {
+    noteOpenCodeSqliteScanHardFailure()
+    return
+  }
   // Only a scan that got through its SQLite work clears the process-wide
   // backoff; a scan that never had any to do says nothing either way.
   if (metrics.terminationReason === null && !metrics.workOmitted) {
@@ -61,9 +72,13 @@ function scanOutcomeMessage(metrics: OpenCodeSqliteScanMetrics): string | null {
 
 function terminationCauseMessage(metrics: OpenCodeSqliteScanMetrics): string | null {
   // Cooldown is worth reporting even with nothing omitted: it explains why the
-  // SQLite half of the listing is absent this time round.
+  // SQLite half of the listing is absent this time round. But only to someone
+  // who has an OpenCode database — a backoff outliving the install it came from
+  // must not surface an OpenCode error on a machine with no OpenCode.
   if (metrics.terminationReason === 'cooldown') {
-    return 'OpenCode history was not scanned this time; its background scanner is paused after repeated failures and will be retried automatically.'
+    return metrics.sqliteSourcePresent
+      ? 'OpenCode history was not scanned this time; its background scanner is paused after repeated failures and will be retried automatically.'
+      : null
   }
   if (!metrics.workOmitted) {
     return null
@@ -75,6 +90,8 @@ function terminationCauseMessage(metrics: OpenCodeSqliteScanMetrics): string | n
       return 'Some OpenCode history was skipped because its background scanner kept crashing.'
     case 'workerTimeoutLoop':
       return 'Some OpenCode history was skipped because its SQLite database was too slow to read.'
+    case 'workerUnavailable':
+      return 'Some OpenCode history was skipped because its background scanner could not start.'
     // 'cooldown' returned above, so it is already narrowed out here.
     case 'scanEnded':
     case null:

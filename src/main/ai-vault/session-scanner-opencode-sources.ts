@@ -26,6 +26,7 @@ export function opencodeDiscoveries(
       storageDir,
       dbPaths: await opencodeDbPathsForSource(options, wslHomeDirs, storageDir, index),
       limitPerAgent: limit,
+      platform: options.platform ?? process.platform,
       issues
     })
   )

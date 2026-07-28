@@ -3,6 +3,7 @@ import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import { discoverFiles } from './session-scanner-discovery'
 import { splitOpenCodeSqliteCandidate } from './session-scanner-opencode-sqlite-paths'
 import { listOpenCodeSqliteSessionsViaWorker } from './session-scanner-opencode-sqlite-worker-spawn'
+import { cachedOpenCodeSqliteCandidates } from './session-scanner-opencode-sqlite-cached-candidates'
 import type {
   FileWithMtime,
   SessionFileCandidate,
@@ -26,13 +27,24 @@ async function listWithinScanBudget(args: {
   context: OpenCodeSqliteScanContext
   dbPaths: readonly string[]
   limitPerAgent: number
+  platform: NodeJS.Platform
   issues: AiVaultScanIssue[]
 }): Promise<SessionFileCandidate[]> {
   // An already-terminated scan (cooldown, or a sibling source that crashed the
   // shared context) has no budget to spend; don't round-trip the worker to be
-  // told so.
+  // told so. Replay what the parse cache already knows instead of dropping every
+  // SQLite-backed session for the duration of the backoff — the listing is still
+  // unreconciled, which is what markSqliteListCancelled tells the user.
   if (args.context.isTerminated) {
-    return []
+    if (args.dbPaths.length === 0) {
+      return []
+    }
+    args.context.markSqliteListCancelled()
+    return cachedOpenCodeSqliteCandidates({
+      dbPaths: args.dbPaths,
+      platform: args.platform,
+      limit: args.limitPerAgent
+    })
   }
   args.context.armDeadline()
   try {
@@ -64,6 +76,7 @@ function sessionIdFromLegacyFilePath(filePath: string): string {
  * @param args.storageDir - Root of the OpenCode storage directory (contains `session/` and `message/`).
  * @param args.dbPaths - Absolute paths to opencode.db files to scan.
  * @param args.limitPerAgent - Maximum number of candidates per source.
+ * @param args.platform - Platform the parse cache entries were produced on.
  * @param args.issues - Collected scan issues to append errors to.
  * @returns A `SessionFileDiscovery` with deduplicated file entries.
  */
@@ -72,8 +85,12 @@ export async function discoverOpenCodeSessions(args: {
   storageDir: string
   dbPaths: readonly string[]
   limitPerAgent: number
+  platform: NodeJS.Platform
   issues: AiVaultScanIssue[]
 }): Promise<SessionFileDiscovery> {
+  if (args.dbPaths.length > 0) {
+    args.context.markSqliteSourcePresent()
+  }
   const [fileDiscovery, sqliteCandidates] = await Promise.all([
     discoverFiles({
       rootDir: join(args.storageDir, 'session'),

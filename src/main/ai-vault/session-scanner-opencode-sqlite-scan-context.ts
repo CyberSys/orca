@@ -6,7 +6,16 @@ export const MAX_CONSECUTIVE_OPENCODE_WORKER_DEATHS = 3
 // exceed the per-call timeout without anything being wrong, so timeouts get
 // their own budget and their own termination reason rather than being reported
 // to the user as a crash.
-export const MAX_CONSECUTIVE_OPENCODE_WORKER_TIMEOUTS = 3
+//
+// Two, not three: a timed-out call also costs TERMINATE_GRACE_MS before the next
+// one can dispatch, so three parse timeouts (3 × 15s + 2 × 5s) outlast the scan
+// deadline and this circuit could never trip. Keep
+// MAX_CONSECUTIVE_OPENCODE_WORKER_TIMEOUTS × (PARSE_TIMEOUT_MS + TERMINATE_GRACE_MS)
+// under OPENCODE_SQLITE_SCAN_DEADLINE_MS or the timeout reason becomes dead code.
+export const MAX_CONSECUTIVE_OPENCODE_WORKER_TIMEOUTS = 2
+// A worker that cannot be spawned fails instantly, so retrying it for every one
+// of a thousand candidates is pure waste; give up on the scan after a few.
+export const MAX_CONSECUTIVE_OPENCODE_WORKER_UNAVAILABLE = 3
 
 export class OpenCodeSqliteScanTerminatedError extends Error {
   constructor(message: string) {
@@ -26,14 +35,21 @@ export type OpenCodeSqliteScanTerminationReason =
   | 'deadline'
   | 'workerCrashLoop'
   | 'workerTimeoutLoop'
+  | 'workerUnavailable'
   | 'scanEnded'
 
 export type OpenCodeSqliteScanMetrics = {
   activeWorkerMs: number
   deadlineExpired: boolean
   queueWaitMs: number
+  // True once any SQLite source was found to have a database at all; gates
+  // user-facing OpenCode messages on OpenCode actually being installed.
+  sqliteSourcePresent: boolean
   sqliteListCancelled: boolean
   terminationReason: OpenCodeSqliteScanTerminationReason | null
+  // Whether any worker call answered this scan. A scan that answered nothing
+  // made no cacheable progress, whichever limiter ended it.
+  workerAnswered: boolean
   workOmitted: boolean
 }
 
@@ -48,10 +64,13 @@ export class OpenCodeSqliteScanContext {
   private deadlineRetired = false
   private consecutiveWorkerDeaths = 0
   private consecutiveWorkerTimeouts = 0
+  private consecutiveWorkerUnavailable = 0
   private activeWorkerMs = 0
   private queueWaitMs = 0
   private deadlineExpired = false
   private listCancelled = false
+  private sourcePresent = false
+  private answered = false
   private omitted = false
   private terminationReason: OpenCodeSqliteScanTerminationReason | null = null
 
@@ -76,6 +95,10 @@ export class OpenCodeSqliteScanContext {
     this.listCancelled = true
   }
 
+  markSqliteSourcePresent(): void {
+    this.sourcePresent = true
+  }
+
   terminationError(): OpenCodeSqliteScanTerminatedError {
     return isOpenCodeSqliteScanTerminatedError(this.signal.reason)
       ? this.signal.reason
@@ -83,8 +106,10 @@ export class OpenCodeSqliteScanContext {
   }
 
   noteWorkerResponse(): void {
+    this.answered = true
     this.consecutiveWorkerDeaths = 0
     this.consecutiveWorkerTimeouts = 0
+    this.consecutiveWorkerUnavailable = 0
   }
 
   noteWorkerDeath(): boolean {
@@ -95,6 +120,11 @@ export class OpenCodeSqliteScanContext {
   noteWorkerTimeout(): boolean {
     this.consecutiveWorkerTimeouts += 1
     return this.consecutiveWorkerTimeouts >= MAX_CONSECUTIVE_OPENCODE_WORKER_TIMEOUTS
+  }
+
+  noteWorkerUnavailable(): boolean {
+    this.consecutiveWorkerUnavailable += 1
+    return this.consecutiveWorkerUnavailable >= MAX_CONSECUTIVE_OPENCODE_WORKER_UNAVAILABLE
   }
 
   tripCircuit(error: Error): void {
@@ -110,6 +140,14 @@ export class OpenCodeSqliteScanContext {
     this.abort(
       `OpenCode SQLite worker kept timing out; remaining work was skipped (${error.message})`,
       'workerTimeoutLoop'
+    )
+  }
+
+  tripUnavailableCircuit(error: Error): void {
+    noteOpenCodeSqliteScanHardFailure()
+    this.abort(
+      `OpenCode SQLite worker could not be started; remaining work was skipped (${error.message})`,
+      'workerUnavailable'
     )
   }
 
@@ -134,8 +172,10 @@ export class OpenCodeSqliteScanContext {
       activeWorkerMs: this.activeWorkerMs,
       deadlineExpired: this.deadlineExpired,
       queueWaitMs: this.queueWaitMs,
+      sqliteSourcePresent: this.sourcePresent,
       sqliteListCancelled: this.listCancelled,
       terminationReason: this.terminationReason,
+      workerAnswered: this.answered,
       workOmitted: this.omitted
     }
   }

@@ -154,6 +154,7 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
     const context = new OpenCodeSqliteScanContext()
     const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
     try {
+      context.markSqliteSourcePresent()
       context.enterCooldown(120_000)
 
       recordOpenCodeSqliteScanOutcome({
@@ -169,6 +170,73 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
       expect(issues[0]?.message).toMatch(/paused after repeated failures/)
     } finally {
       context.dispose()
+    }
+  })
+
+  // Why: the backoff is process-wide and outlives the install that armed it.
+  it('stays quiet about the pause when no OpenCode database exists', () => {
+    const context = new OpenCodeSqliteScanContext()
+    const issues: Parameters<typeof recordOpenCodeSqliteScanOutcome>[0]['issues'] = []
+    try {
+      context.enterCooldown(120_000)
+
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues,
+        span: recordingSpan(new Map())
+      })
+
+      expect(issues).toEqual([])
+    } finally {
+      context.dispose()
+    }
+  })
+
+  // Why: a budget that expired without a single worker answer cached nothing, so
+  // the next scan would burn the same 45s again. That is a hard failure.
+  it('backs off when the whole budget elapsed with no worker answer', async () => {
+    vi.useFakeTimers()
+    const context = new OpenCodeSqliteScanContext(1)
+    try {
+      context.armDeadline()
+      await vi.advanceTimersByTimeAsync(1)
+      context.markWorkOmitted()
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues: [],
+        span: recordingSpan(new Map())
+      })
+      expect(context.metrics().workerAnswered).toBe(false)
+      expect(openCodeSqliteScanCooldownRemainingMs()).toBeGreaterThan(0)
+    } finally {
+      context.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not back off when the budget expired after real progress', async () => {
+    vi.useFakeTimers()
+    const context = new OpenCodeSqliteScanContext(1)
+    try {
+      context.noteWorkerResponse()
+      context.armDeadline()
+      await vi.advanceTimersByTimeAsync(1)
+      context.markWorkOmitted()
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues: [],
+        span: recordingSpan(new Map())
+      })
+      expect(openCodeSqliteScanCooldownRemainingMs()).toBe(0)
+    } finally {
+      context.dispose()
+      vi.useRealTimers()
     }
   })
 

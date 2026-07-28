@@ -7,9 +7,9 @@ import type {
 import {
   MAX_CONSECUTIVE_OPENCODE_WORKER_DEATHS,
   MAX_CONSECUTIVE_OPENCODE_WORKER_TIMEOUTS,
+  MAX_CONSECUTIVE_OPENCODE_WORKER_UNAVAILABLE,
   type OpenCodeSqliteScanContext
 } from './session-scanner-opencode-sqlite-scan-context'
-import { noteOpenCodeSqliteScanHardFailure } from './session-scanner-opencode-sqlite-scan-cooldown'
 import {
   OpenCodeSqliteWorkerHandle,
   type WorkerFactory
@@ -31,6 +31,7 @@ export {
 // overlapping scans.
 export const MAX_CONSECUTIVE_DEATHS = MAX_CONSECUTIVE_OPENCODE_WORKER_DEATHS
 export const MAX_CONSECUTIVE_TIMEOUTS = MAX_CONSECUTIVE_OPENCODE_WORKER_TIMEOUTS
+export const MAX_CONSECUTIVE_UNAVAILABLE = MAX_CONSECUTIVE_OPENCODE_WORKER_UNAVAILABLE
 
 // Omit<union, 'id'> collapses to the shared keys, so omit each member and let
 // the client stamp the correlation id.
@@ -213,16 +214,23 @@ export class OpenCodeSqliteWorkerTransport {
   // Why: the transport is shared by every concurrent scan. Draining the whole
   // queue on one spawn failure would let a single transient failure erase every
   // in-flight scan's OpenCode history, so only the head call is failed and the
-  // next pump re-tries the factory for whoever is behind it.
+  // next pump re-tries the factory for whoever is behind it. The owning scan
+  // still counts the failure, so a worker that never spawns gives up after
+  // MAX_CONSECUTIVE_UNAVAILABLE instead of being retried once per candidate.
   private failHeadAsUnavailable(): void {
     const call = this.queue.shift()
     if (!call) {
       return
     }
-    noteOpenCodeSqliteScanHardFailure()
-    this.settle(call, () =>
-      call.reject(new OpenCodeSqliteWorkerUnavailableError('worker spawn failed'))
-    )
+    const error = new OpenCodeSqliteWorkerUnavailableError('worker spawn failed')
+    const shouldTrip = call.context.noteWorkerUnavailable()
+    this.settle(call, () => call.reject(error))
+    if (shouldTrip) {
+      // Arms the process-wide backoff and terminates the scan, so end-of-scan
+      // bookkeeping cannot mistake it for a clean run and clear the backoff.
+      call.context.tripUnavailableCircuit(error)
+      return
+    }
     this.releaseContextAbortListenerIfUnused(call.context)
     if (this.queue.length > 0) {
       this.pump()

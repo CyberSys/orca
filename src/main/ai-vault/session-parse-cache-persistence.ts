@@ -220,6 +220,12 @@ function parsePersistedEntry(item: unknown): [string, PersistedSessionParseCache
 // failing the same way, silently turning the #9210 cache back off for good. The
 // newest entries are the ones a restart actually reuses, so drop the oldest half
 // and retry until it fits.
+//
+// Both limits are checked against the same limits the load path applies: a
+// snapshot we cannot read back would delete itself on next launch and silently
+// disable the cache. The structure pass is not free (it scans the serialized
+// text), so `keeps a full snapshot loadable` pins the headroom a normal
+// full-size snapshot has, and this stays a guard rather than a routine trimmer.
 export function serializeSessionParseCacheSnapshot(
   entries: [string, PersistedSessionParseCacheEntry][],
   appVersion: string,

@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { scanAiVaultSessions } from './session-scanner'
-import { resetOpenCodeSqliteScanCooldownForTests } from './session-scanner-opencode-sqlite-scan-cooldown'
+import {
+  noteOpenCodeSqliteScanHardFailure,
+  resetOpenCodeSqliteScanCooldownForTests
+} from './session-scanner-opencode-sqlite-scan-cooldown'
 import Database from '../sqlite/sync-database'
 import type { AiVaultScanIssue, AiVaultSession } from '../../shared/ai-vault-types'
 import type { SessionFileCandidate } from './session-scanner-types'
@@ -298,6 +301,44 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
       'cached-b'
     ])
     expect(rescan.issues).toEqual([])
+  })
+
+  // Why: the SQLite listing is the only producer of synthetic candidates, so a
+  // paused scanner used to blank every SQLite-backed session for the whole
+  // backoff — including ones this scan already had parsed and could serve free.
+  it('still lists cached SQLite sessions while the backoff pauses the scanner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-ai-vault-cooldown-cache-'))
+    tempRoots.push(root)
+    const roots = isolatedScanRoots(root)
+    const dbPath = join(root, 'opencode.db')
+    const scanArgs = {
+      ...roots,
+      opencodeDbPaths: [dbPath],
+      platform: 'darwin' as const,
+      limit: 50
+    }
+
+    workerMock.listOverride = async () => [
+      sqliteCandidate(dbPath, 'warm-a', 2_000),
+      sqliteCandidate(dbPath, 'warm-b', 1_000)
+    ]
+    workerMock.parseOverride = async (args) => sqliteSession(dbPath, args.sessionId, 2_000)
+    const warm = await scanAiVaultSessions(scanArgs)
+    expect(warm.sessions.map((session) => session.sessionId).sort()).toEqual(['warm-a', 'warm-b'])
+
+    // The backoff now holds, so the scan terminates before discovery.
+    noteOpenCodeSqliteScanHardFailure()
+    workerMock.listCalls = 0
+    workerMock.parseCalls = 0
+    const paused = await scanAiVaultSessions(scanArgs)
+
+    expect(workerMock.listCalls).toBe(0)
+    expect(workerMock.parseCalls).toBe(0)
+    expect(paused.sessions.map((session) => session.sessionId).sort()).toEqual(['warm-a', 'warm-b'])
+    // The listing was not reconciled against the DB, and the user is told so.
+    expect(paused.issues.map((issue) => issue.message)).toEqual([
+      'OpenCode history was not scanned this time; its background scanner is paused after repeated failures and will be retried automatically. Its SQLite database was never checked, so some sessions may also be missing or out of date.'
+    ])
   })
 
   it('flags legacy OpenCode files as unreconciled when the SQLite listing is cancelled', async () => {

@@ -22,11 +22,14 @@ import {
   resetSessionParseCachePersistenceForTests,
   scheduleSessionParseCachePersist,
   serializeSessionParseCacheSnapshot,
+  SESSION_PARSE_CACHE_JSON_LIMITS,
   SESSION_PARSE_CACHE_MAX_BYTES
 } from './session-parse-cache-persistence'
+import { assertJsonTextStructureWithinLimits } from '../../shared/json-text-structure-limit'
 import { scanAiVaultSessions } from './session-scanner'
 import {
   createSessionParseStats,
+  MAX_CACHE_ENTRIES,
   parseAgentSessionFileCached,
   resetSessionParseCacheForTests,
   seedSessionParseCache,
@@ -643,6 +646,59 @@ describe('session parse cache persistence', () => {
     expect(saved.entries.length).toBeLessThan(entries.length)
     // Snapshot order is oldest→newest, and a restart only reuses the newest.
     expect(saved.entries.at(-1)?.[0]).toBe('/foreign/entry-15.jsonl')
+  })
+
+  // Why: the save path no longer re-scans its own output for structural tokens,
+  // so nothing at runtime stops a snapshot the loader would then reject and
+  // delete — silently disabling the #9210 cache. This is that guard: a maximal
+  // snapshot of the widest realistic session must load back within both limits.
+  it('keeps a full snapshot loadable within the load-path limits', () => {
+    const entries: [string, PersistedSessionParseCacheEntry][] = Array.from(
+      { length: MAX_CACHE_ENTRIES },
+      (_, index) => [
+        `/Users/someone/.claude/projects/a-fairly-long-project-dir/session-${index}.jsonl`,
+        {
+          mtimeMs: 1_700_000_000_000 + index,
+          sizeBytes: 4096,
+          platform: process.platform,
+          session: {
+            id: `local:claude:session-${index}:/path/session-${index}.jsonl`,
+            executionHostId: 'local',
+            agent: 'claude',
+            sessionId: `session-${index}`,
+            title: 't'.repeat(96),
+            cwd: '/Users/someone/Documents/projects/orca/a-worktree',
+            branch: 'some-fairly-long-branch-name',
+            model: 'claude-opus-5',
+            filePath: `/path/session-${index}.jsonl`,
+            codexHome: null,
+            createdAt: '2026-07-20T00:00:00.000Z',
+            updatedAt: '2026-07-26T00:00:00.000Z',
+            modifiedAt: '2026-07-26T00:00:00.000Z',
+            messageCount: 500,
+            totalTokens: 1_000_000,
+            // The accumulator's ring buffer caps previews at 5 × 220 chars.
+            previewMessages: Array.from({ length: 5 }, () => ({
+              role: 'user' as const,
+              text: 'p'.repeat(220),
+              timestamp: '2026-07-26T00:00:00.000Z'
+            })),
+            lastUserPrompt: 'q'.repeat(500),
+            queuedMessageCount: 0,
+            subagentTranscriptCount: 4,
+            resumeCommand: `claude --resume session-${index}`,
+            subagent: null
+          }
+        }
+      ]
+    )
+
+    const serialized = serializeSessionParseCacheSnapshot(entries, APP_VERSION)
+    expect(serialized).not.toBeNull()
+    expect(Buffer.byteLength(serialized!, 'utf8')).toBeLessThan(SESSION_PARSE_CACHE_MAX_BYTES)
+    expect(() =>
+      assertJsonTextStructureWithinLimits(serialized!, SESSION_PARSE_CACHE_JSON_LIMITS)
+    ).not.toThrow()
   })
 
   it('reports rather than writes when no subset of entries can fit', () => {

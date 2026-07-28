@@ -169,6 +169,11 @@ export function hasFreshSessionParseCacheEntry(
   return isEntryUnchanged(cache.get(candidate.file.path), candidate, platform)
 }
 
+/** Live read-only view of cached entries, in LRU order (oldest first). */
+export function sessionParseCacheEntries(): Iterable<[string, PersistedSessionParseCacheEntry]> {
+  return cache.entries()
+}
+
 function storeEntry(path: string, entry: SessionParseCacheEntry): void {
   cache.delete(path)
   cache.set(path, entry)
