@@ -14,7 +14,7 @@ import {
 import * as fsPromises from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import {
   ensureSessionParseCacheLoaded,
   flushSessionParseCachePersistForTests,
@@ -48,6 +48,14 @@ vi.mock('node:fs/promises', { spy: true })
 const APP_VERSION = '1.2.3-test'
 
 let tempRoots: string[] = []
+let activeDebugSpy: MockInstance | null = null
+
+// Restored from a hook, not inline: a failed assertion must not leave
+// console.debug stubbed for every later test in the file.
+function silenceDebugLogs(): MockInstance {
+  activeDebugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+  return activeDebugSpy
+}
 
 beforeEach(() => {
   resetSessionParseCacheForTests()
@@ -55,6 +63,8 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  activeDebugSpy?.mockRestore()
+  activeDebugSpy = null
   resetSessionParseCachePersistenceForTests()
   await Promise.all(tempRoots.map((root) => rm(root, { recursive: true, force: true })))
   tempRoots = []
@@ -287,12 +297,16 @@ describe('session parse cache persistence', () => {
       )
     }
 
-    await writeNestedCache(28)
+    // The persisted wrapper (file object → entries → entry pair → entry
+    // object) already spends 4 of the budget before the session value starts.
+    const maxSessionDepth = SESSION_PARSE_CACHE_JSON_LIMITS.nestingDepth - 4
+
+    await writeNestedCache(maxSessionDepth)
     initSessionParseCachePersistence({ filePath: cacheFile, appVersion: APP_VERSION })
     expect((await coldParseStats(transcript)).reused).toBe(1)
 
     simulateRestart(cacheFile)
-    await writeNestedCache(29)
+    await writeNestedCache(maxSessionDepth + 1)
     const rejectedStats = await coldParseStats(transcript)
     expect(rejectedStats.reused).toBe(0)
     expect(rejectedStats.fullParses).toBe(1)
@@ -610,7 +624,7 @@ describe('session parse cache persistence', () => {
         }
       ]
     ])
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const debugSpy = silenceDebugLogs()
     scheduleSessionParseCachePersist({
       reused: 0,
       incremental: 0,
@@ -621,7 +635,6 @@ describe('session parse cache persistence', () => {
 
     expect(await readFile(cacheFile, 'utf8')).toBe(previousSnapshot)
     expect(debugSpy).toHaveBeenCalled()
-    debugSpy.mockRestore()
   })
 
   // Why: hitting the cap must degrade, not disable. Giving up outright would
@@ -742,7 +755,7 @@ describe('session parse cache persistence', () => {
   })
 
   it('reports rather than writes when no subset of entries can fit', () => {
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const debugSpy = silenceDebugLogs()
     // One poison entry, so trimming can never produce a fitting snapshot.
     const serialized = serializeSessionParseCacheSnapshot(
       [
@@ -756,7 +769,6 @@ describe('session parse cache persistence', () => {
     )
     expect(serialized).toBeNull()
     expect(debugSpy).toHaveBeenCalled()
-    debugSpy.mockRestore()
   })
 
   it('leaves the previous snapshot intact when writer byte admission fails', async () => {
@@ -778,7 +790,7 @@ describe('session parse cache persistence', () => {
         }
       ]
     ])
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const debugSpy = silenceDebugLogs()
     scheduleSessionParseCachePersist({
       reused: 0,
       incremental: 0,
@@ -789,7 +801,6 @@ describe('session parse cache persistence', () => {
 
     expect(await readFile(cacheFile, 'utf8')).toBe(previousSnapshot)
     expect(debugSpy).toHaveBeenCalled()
-    debugSpy.mockRestore()
   })
 
   it('a failing rename cleans up its temp file and keeps the previous snapshot usable', async () => {
@@ -806,7 +817,7 @@ describe('session parse cache persistence', () => {
     await writeFile(other, `${userRecord(2, 'second session')}\n${assistantRecord(3, 'reply')}\n`)
     const stats = createSessionParseStats()
     await parseAgentSessionFileCached(await claudeCandidate(other), process.platform, stats)
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const debugSpy = silenceDebugLogs()
     vi.mocked(fsPromises.rename).mockRejectedValueOnce(
       Object.assign(new Error('EPERM: rename blocked'), { code: 'EPERM' })
     )
@@ -829,7 +840,6 @@ describe('session parse cache persistence', () => {
       reusedStats
     )
     expect(reusedStats.reused).toBe(1)
-    debugSpy.mockRestore()
   })
 
   it('swallows save failures and leaves scan results unaffected', async () => {
@@ -842,7 +852,7 @@ describe('session parse cache persistence', () => {
       filePath: join(blocker, 'session-parse-cache.json'),
       appVersion: APP_VERSION
     })
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const debugSpy = silenceDebugLogs()
 
     const transcript = await writeTranscript(root)
     const candidate = await claudeCandidate(transcript)
@@ -863,6 +873,5 @@ describe('session parse cache persistence', () => {
     expect(reusedStats.reused).toBe(1)
     expect(await readdir(root)).toEqual(expect.arrayContaining(['blocker']))
     expect((await readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([])
-    debugSpy.mockRestore()
   })
 })

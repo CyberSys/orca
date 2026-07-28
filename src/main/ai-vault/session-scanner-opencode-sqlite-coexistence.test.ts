@@ -11,7 +11,10 @@ import {
 import Database from '../sqlite/sync-database'
 import type { AiVaultScanIssue, AiVaultSession } from '../../shared/ai-vault-types'
 import type { SessionFileCandidate } from './session-scanner-types'
-import type { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
+import {
+  OPENCODE_SQLITE_SCAN_DEADLINE_MS,
+  type OpenCodeSqliteScanContext
+} from './session-scanner-opencode-sqlite-scan-context'
 import { buildOpenCodeSqliteCandidatePath } from './session-scanner-opencode-sqlite-paths'
 import type { SessionParseStats } from './session-scanner-parse-cache'
 import type * as GrokParserModule from './session-scanner-grok-parser'
@@ -465,7 +468,7 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
         limit: 500
       })
       await vi.waitFor(() => expect(workerMock.parseCalls).toBe(8))
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(OPENCODE_SQLITE_SCAN_DEADLINE_MS + 1)
       const result = await scan
 
       expect(workerMock.listCalls).toBe(2)
@@ -522,7 +525,7 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
         expect(workerMock.parseCalls).toBe(1)
         expect(grokMock.calls).toBe(1)
       })
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(OPENCODE_SQLITE_SCAN_DEADLINE_MS + 1)
       expect(context).not.toBeNull()
       expect(context!.metrics().deadlineExpired).toBe(false)
 
@@ -555,7 +558,7 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
 
       const scan = scanAiVaultSessions({ ...roots, limit: 10 })
       await vi.waitFor(() => expect(grokMock.calls).toBe(1))
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(OPENCODE_SQLITE_SCAN_DEADLINE_MS + 1)
       expect(context).not.toBeNull()
       expect(context!.metrics().deadlineExpired).toBe(false)
 
