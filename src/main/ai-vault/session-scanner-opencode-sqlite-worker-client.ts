@@ -7,6 +7,8 @@ import {
 } from './session-scanner-opencode-sqlite-scan-context'
 import type { OpenCodeSqliteListValue } from './session-scanner-opencode-sqlite-worker-protocol'
 import {
+  OpenCodeSqliteWorkerFaultError,
+  OpenCodeSqliteWorkerTimeoutError,
   OpenCodeSqliteWorkerTransport,
   OpenCodeSqliteWorkerUnavailableError,
   type WorkerFactory
@@ -44,6 +46,9 @@ export class OpenCodeSqliteWorkerClient {
         return []
       }
       if (err instanceof OpenCodeSqliteWorkerUnavailableError) {
+        if (!args.context.isTerminated) {
+          args.context.tripUnavailableCircuit(err)
+        }
         args.issues.push({
           agent: 'opencode',
           path: args.dbPaths[0] ?? 'opencode.db',
@@ -51,6 +56,13 @@ export class OpenCodeSqliteWorkerClient {
             'OpenCode history was skipped because its background scanner could not start; the app remains responsive.'
         })
         return []
+      }
+      if (err instanceof OpenCodeSqliteWorkerTimeoutError && !args.context.isTerminated) {
+        args.context.tripTimeoutCircuit(err)
+      } else if (err instanceof OpenCodeSqliteWorkerFaultError && !args.context.isTerminated) {
+        args.context.tripCircuit(err)
+      } else if (!args.context.isTerminated) {
+        args.context.tripListFailure(err instanceof Error ? err : new Error(String(err)))
       }
       args.issues.push({
         agent: 'opencode',

@@ -48,11 +48,20 @@ async function listWithinScanBudget(args: {
   }
   args.context.armDeadline()
   try {
-    return await listOpenCodeSqliteSessionsViaWorker({
+    const candidates = await listOpenCodeSqliteSessionsViaWorker({
       context: args.context,
       dbPaths: args.dbPaths,
       limit: args.limitPerAgent,
       issues: args.issues
+    })
+    if (!args.context.isTerminated) {
+      return candidates
+    }
+    args.context.markSqliteListCancelled()
+    return cachedOpenCodeSqliteCandidates({
+      dbPaths: args.dbPaths,
+      platform: args.platform,
+      limit: args.limitPerAgent
     })
   } finally {
     args.context.pauseDeadline()

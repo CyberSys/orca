@@ -36,6 +36,7 @@ export type OpenCodeSqliteScanTerminationReason =
   | 'workerCrashLoop'
   | 'workerTimeoutLoop'
   | 'workerUnavailable'
+  | 'listFailed'
   | 'scanEnded'
 
 export type OpenCodeSqliteScanMetrics = {
@@ -47,9 +48,10 @@ export type OpenCodeSqliteScanMetrics = {
   sqliteSourcePresent: boolean
   sqliteListCancelled: boolean
   terminationReason: OpenCodeSqliteScanTerminationReason | null
-  // Whether any worker call answered this scan. A scan that answered nothing
-  // made no cacheable progress, whichever limiter ended it.
+  // Whether any worker call answered this scan; diagnostic only.
   workerAnswered: boolean
+  // A successful parse response is cacheable; a list response is not.
+  parseAnswered: boolean
   workOmitted: boolean
 }
 
@@ -71,6 +73,7 @@ export class OpenCodeSqliteScanContext {
   private listCancelled = false
   private sourcePresent = false
   private answered = false
+  private parseAnswered = false
   private omitted = false
   private terminationReason: OpenCodeSqliteScanTerminationReason | null = null
 
@@ -112,6 +115,10 @@ export class OpenCodeSqliteScanContext {
     this.consecutiveWorkerUnavailable = 0
   }
 
+  noteParseResponse(): void {
+    this.parseAnswered = true
+  }
+
   noteWorkerDeath(): boolean {
     this.consecutiveWorkerDeaths += 1
     return this.consecutiveWorkerDeaths >= MAX_CONSECUTIVE_OPENCODE_WORKER_DEATHS
@@ -151,6 +158,14 @@ export class OpenCodeSqliteScanContext {
     )
   }
 
+  tripListFailure(error: Error): void {
+    noteOpenCodeSqliteScanHardFailure()
+    this.abort(
+      `OpenCode SQLite listing failed; remaining work was skipped (${error.message})`,
+      'listFailed'
+    )
+  }
+
   /** Skip this scan's SQLite work entirely while the process-wide backoff holds. */
   enterCooldown(remainingMs: number): void {
     this.abort(
@@ -176,6 +191,7 @@ export class OpenCodeSqliteScanContext {
       sqliteListCancelled: this.listCancelled,
       terminationReason: this.terminationReason,
       workerAnswered: this.answered,
+      parseAnswered: this.parseAnswered,
       workOmitted: this.omitted
     }
   }

@@ -17,58 +17,90 @@ export class JsonTextStructureCapacityError extends Error {
   }
 }
 
+export type JsonTextStructureUsage = Readonly<{
+  structuralTokens: number
+  nestingDepth: number
+}>
+
+export class JsonTextStructureValidator {
+  private structuralTokens = 0
+  private depth = 0
+  private maximumDepth = 0
+  private inString = false
+  private escaped = false
+
+  constructor(private readonly limits: JsonTextStructureLimits) {
+    assertLimit(limits.structuralTokens)
+    assertLimit(limits.nestingDepth)
+  }
+
+  consume(content: string, start = 0, end = content.length): void {
+    assertTextRange(content, start, end)
+    for (let index = start; index < end; index += 1) {
+      const code = content.charCodeAt(index)
+      if (this.inString) {
+        if (this.escaped) {
+          this.escaped = false
+        } else if (code === BACKSLASH) {
+          this.escaped = true
+        } else if (code === QUOTE) {
+          this.inString = false
+        }
+        continue
+      }
+      if (code === QUOTE) {
+        this.inString = true
+        continue
+      }
+      if (!isStructuralToken(code)) {
+        continue
+      }
+      this.structuralTokens += 1
+      if (this.structuralTokens > this.limits.structuralTokens) {
+        throw new JsonTextStructureCapacityError('structuralTokens', this.limits.structuralTokens)
+      }
+      if (code === OPEN_BRACE || code === OPEN_BRACKET) {
+        this.depth += 1
+        this.maximumDepth = Math.max(this.maximumDepth, this.depth)
+        if (this.depth > this.limits.nestingDepth) {
+          throw new JsonTextStructureCapacityError('nestingDepth', this.limits.nestingDepth)
+        }
+      } else if (code === CLOSE_BRACE || code === CLOSE_BRACKET) {
+        this.depth = Math.max(0, this.depth - 1)
+      }
+    }
+  }
+
+  usage(): JsonTextStructureUsage {
+    return {
+      structuralTokens: this.structuralTokens,
+      nestingDepth: this.maximumDepth
+    }
+  }
+}
+
 export function assertJsonTextStructureWithinLimits(
   content: string,
   limits: JsonTextStructureLimits
 ): void {
-  assertLimit(limits.structuralTokens)
-  assertLimit(limits.nestingDepth)
-  let structuralTokens = 0
-  let depth = 0
-  let inString = false
-  let escaped = false
-
-  // Why: this scans whole cache snapshots (tens of MB) on the main thread, so it
-  // reads char codes rather than one-character substrings — same grammar, but
-  // without a per-character string comparison chain.
-  const length = content.length
-  for (let index = 0; index < length; index += 1) {
-    const code = content.charCodeAt(index)
-    if (inString) {
-      if (escaped) {
-        escaped = false
-      } else if (code === BACKSLASH) {
-        escaped = true
-      } else if (code === QUOTE) {
-        inString = false
-      }
-      continue
-    }
-    if (code === QUOTE) {
-      inString = true
-      continue
-    }
-    if (!isStructuralToken(code)) {
-      continue
-    }
-    structuralTokens += 1
-    if (structuralTokens > limits.structuralTokens) {
-      throw new JsonTextStructureCapacityError('structuralTokens', limits.structuralTokens)
-    }
-    if (code === OPEN_BRACE || code === OPEN_BRACKET) {
-      depth += 1
-      if (depth > limits.nestingDepth) {
-        throw new JsonTextStructureCapacityError('nestingDepth', limits.nestingDepth)
-      }
-    } else if (code === CLOSE_BRACE || code === CLOSE_BRACKET) {
-      depth = Math.max(0, depth - 1)
-    }
-  }
+  new JsonTextStructureValidator(limits).consume(content)
 }
 
 function assertLimit(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError('JSON structure limits must be non-negative safe integers')
+  }
+}
+
+function assertTextRange(content: string, start: number, end: number): void {
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    end < start ||
+    end > content.length
+  ) {
+    throw new RangeError('JSON text range is out of bounds')
   }
 }
 

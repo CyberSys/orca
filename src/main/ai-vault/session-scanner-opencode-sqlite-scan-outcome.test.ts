@@ -42,6 +42,7 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
     // A budget expiry is not a hard failure: it still made cacheable progress.
     const clean = new OpenCodeSqliteScanContext()
     try {
+      clean.markSqliteSourcePresent()
       recordOpenCodeSqliteScanOutcome({
         candidates: [],
         context: clean,
@@ -52,6 +53,27 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
       expect(openCodeSqliteScanCooldownRemainingMs()).toBe(0)
     } finally {
       clean.dispose()
+    }
+  })
+
+  it('does not clear a prior failure when the scan had no SQLite source', () => {
+    const failed = new OpenCodeSqliteScanContext()
+    failed.tripCircuit(new Error('worker died'))
+    failed.dispose()
+    expect(openCodeSqliteScanCooldownRemainingMs()).toBeGreaterThan(0)
+
+    const noSource = new OpenCodeSqliteScanContext()
+    try {
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context: noSource,
+        discoveries: [],
+        issues: [],
+        span: recordingSpan(new Map())
+      })
+      expect(openCodeSqliteScanCooldownRemainingMs()).toBeGreaterThan(0)
+    } finally {
+      noSource.dispose()
     }
   })
 
@@ -194,9 +216,7 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
     }
   })
 
-  // Why: a budget that expired without a single worker answer cached nothing, so
-  // the next scan would burn the same 45s again. That is a hard failure.
-  it('backs off when the whole budget elapsed with no worker answer', async () => {
+  it('backs off when the whole budget elapsed with no parse response', async () => {
     vi.useFakeTimers()
     const context = new OpenCodeSqliteScanContext(1)
     try {
@@ -218,11 +238,35 @@ describe('recordOpenCodeSqliteScanOutcome', () => {
     }
   })
 
+  it('does not mistake a list response for cacheable progress', async () => {
+    vi.useFakeTimers()
+    const context = new OpenCodeSqliteScanContext(1)
+    try {
+      context.noteWorkerResponse()
+      context.armDeadline()
+      await vi.advanceTimersByTimeAsync(1)
+      context.markWorkOmitted()
+      recordOpenCodeSqliteScanOutcome({
+        candidates: [],
+        context,
+        discoveries: [],
+        issues: [],
+        span: recordingSpan(new Map())
+      })
+      expect(context.metrics()).toMatchObject({ workerAnswered: true, parseAnswered: false })
+      expect(openCodeSqliteScanCooldownRemainingMs()).toBeGreaterThan(0)
+    } finally {
+      context.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('does not back off when the budget expired after real progress', async () => {
     vi.useFakeTimers()
     const context = new OpenCodeSqliteScanContext(1)
     try {
       context.noteWorkerResponse()
+      context.noteParseResponse()
       context.armDeadline()
       await vi.advanceTimersByTimeAsync(1)
       context.markWorkOmitted()

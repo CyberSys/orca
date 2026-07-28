@@ -26,6 +26,7 @@ import {
   SESSION_PARSE_CACHE_MAX_BYTES
 } from './session-parse-cache-persistence'
 import { assertJsonTextStructureWithinLimits } from '../../shared/json-text-structure-limit'
+import { serializeSessionParseCacheSnapshotCooperatively } from './session-parse-cache-snapshot-serialization'
 import { scanAiVaultSessions } from './session-scanner'
 import {
   createSessionParseStats,
@@ -648,10 +649,49 @@ describe('session parse cache persistence', () => {
     expect(saved.entries.at(-1)?.[0]).toBe('/foreign/entry-15.jsonl')
   })
 
-  // Why: the save path no longer re-scans its own output for structural tokens,
-  // so nothing at runtime stops a snapshot the loader would then reject and
-  // delete — silently disabling the #9210 cache. This is that guard: a maximal
-  // snapshot of the widest realistic session must load back within both limits.
+  it('retains the maximum fitting suffix instead of dropping half for a tiny overflow', () => {
+    const entries: [string, PersistedSessionParseCacheEntry][] = Array.from(
+      { length: 16 },
+      (_, index) => [
+        `/foreign/entry-${index}.jsonl`,
+        { mtimeMs: index, sizeBytes: 1, platform: process.platform, session: null }
+      ]
+    )
+    const full = serializeSessionParseCacheSnapshot(entries, APP_VERSION)
+    expect(full).not.toBeNull()
+
+    const serialized = serializeSessionParseCacheSnapshot(
+      entries,
+      APP_VERSION,
+      Buffer.byteLength(full!) - 1
+    )
+    const saved = JSON.parse(serialized!) as {
+      entries: [string, PersistedSessionParseCacheEntry][]
+    }
+    expect(saved.entries).toHaveLength(15)
+    expect(saved.entries[0]?.[0]).toBe('/foreign/entry-1.jsonl')
+    expect(saved.entries.at(-1)?.[0]).toBe('/foreign/entry-15.jsonl')
+  })
+
+  it('cooperatively matches synchronous admission and precise trimming', async () => {
+    const entries: [string, PersistedSessionParseCacheEntry][] = Array.from(
+      { length: 64 },
+      (_, index) => [
+        `/foreign/entry-${index}.jsonl`,
+        { mtimeMs: index, sizeBytes: 1, platform: process.platform, session: null }
+      ]
+    )
+
+    const full = serializeSessionParseCacheSnapshot(entries, APP_VERSION)
+    expect(full).not.toBeNull()
+    const maxBytes = Buffer.byteLength(full!) - 1
+    await expect(
+      serializeSessionParseCacheSnapshotCooperatively(entries, APP_VERSION, maxBytes)
+    ).resolves.toBe(serializeSessionParseCacheSnapshot(entries, APP_VERSION, maxBytes))
+  })
+
+  // Writer and loader enforce the same limits; pin enough headroom for the
+  // widest realistic full cache so capacity trimming stays exceptional.
   it('keeps a full snapshot loadable within the load-path limits', () => {
     const entries: [string, PersistedSessionParseCacheEntry][] = Array.from(
       { length: MAX_CACHE_ENTRIES },

@@ -10,86 +10,13 @@ import {
   MAX_CONSECUTIVE_DEATHS,
   MAX_CONSECUTIVE_TIMEOUTS
 } from './session-scanner-opencode-sqlite-worker-transport'
-import type {
-  OpenCodeSqliteWorkerRequest,
-  OpenCodeSqliteWorkerResponse
-} from './session-scanner-opencode-sqlite-worker-protocol'
+import type { OpenCodeSqliteWorkerResponse } from './session-scanner-opencode-sqlite-worker-protocol'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import { OpenCodeSqliteScanContext } from './session-scanner-opencode-sqlite-scan-context'
-
-// A worker_threads stand-in the tests drive directly: it records posted requests
-// and lets a test emit message/error/exit without a built worker bundle.
-class FakeWorker {
-  postedRequests: OpenCodeSqliteWorkerRequest[] = []
-  postMessageError: Error | null = null
-  terminated = false
-  unrefed = false
-  private listeners = new Map<string, Set<(arg?: unknown) => void>>()
-
-  on(event: string, listener: (arg?: unknown) => void): this {
-    const set = this.listeners.get(event) ?? new Set()
-    set.add(listener)
-    this.listeners.set(event, set)
-    return this
-  }
-
-  off(event: string, listener: (arg?: unknown) => void): this {
-    this.listeners.get(event)?.delete(listener)
-    return this
-  }
-
-  removeAllListeners(): void {
-    this.listeners.clear()
-  }
-
-  unref(): void {
-    this.unrefed = true
-  }
-
-  async terminate(): Promise<number> {
-    this.terminated = true
-    return 1
-  }
-
-  postMessage(request: OpenCodeSqliteWorkerRequest): void {
-    if (this.postMessageError) {
-      const error = this.postMessageError
-      this.postMessageError = null
-      throw error
-    }
-    this.postedRequests.push(request)
-  }
-
-  emit(event: string, arg?: unknown): void {
-    // Copy first: the client removes its listeners synchronously during a fault.
-    for (const listener of Array.from(this.listeners.get(event) ?? [])) {
-      listener(arg)
-    }
-  }
-
-  lastId(): number {
-    const last = this.postedRequests.at(-1)
-    if (!last) {
-      throw new Error('no request posted to fake worker')
-    }
-    return last.id
-  }
-
-  listenerCount(): number {
-    return Array.from(this.listeners.values()).reduce(
-      (total, listeners) => total + listeners.size,
-      0
-    )
-  }
-}
-
-function makeFactory(workers: FakeWorker[]): () => Worker {
-  return () => {
-    const worker = new FakeWorker()
-    workers.push(worker)
-    return worker as unknown as Worker
-  }
-}
+import {
+  FakeOpenCodeSqliteWorker as FakeWorker,
+  makeFakeOpenCodeSqliteWorkerFactory as makeFactory
+} from './fake-opencode-sqlite-worker'
 
 function emitSettlementRaceEvent(worker: FakeWorker, event: 'message' | 'error' | 'exit'): void {
   if (event === 'message') {
@@ -553,6 +480,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
     expect(
       listIssues.some((issue) => issue.message.includes('background scanner could not start'))
     ).toBe(true)
+    expect(context.metrics().terminationReason).toBe('workerUnavailable')
     await expect(
       client.parse({
         context,
@@ -560,7 +488,7 @@ describe('OpenCodeSqliteWorkerClient', () => {
         sessionId: 'ses_skipped',
         platform: 'darwin'
       })
-    ).rejects.toThrow(/background scanner could not start/)
+    ).rejects.toThrow(/could not be started/)
   })
 
   // Why: the transport is a process-wide singleton shared by every concurrent
@@ -717,9 +645,34 @@ describe('OpenCodeSqliteWorkerClient', () => {
       expect(issues).toHaveLength(1)
       expect(issues[0]!.agent).toBe('opencode')
       expect(issues[0]!.message).toMatch(/did not complete/)
+      expect(context.metrics().terminationReason).toBe('workerTimeoutLoop')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('terminates the scan when the worker rejects the list request', async () => {
+    const workers: FakeWorker[] = []
+    const client = new OpenCodeSqliteWorkerClient({
+      workerFactory: makeFactory(workers),
+      log() {}
+    })
+    const issues: AiVaultScanIssue[] = []
+    const listPromise = client.list({
+      context,
+      dbPaths: ['/tmp/opencode.db'],
+      limit: 10,
+      issues
+    })
+    workers[0]!.emit('message', {
+      id: workers[0]!.lastId(),
+      ok: false,
+      error: 'list handler failed'
+    } satisfies OpenCodeSqliteWorkerResponse)
+
+    await expect(listPromise).resolves.toEqual([])
+    expect(context.metrics().terminationReason).toBe('listFailed')
+    expect(issues[0]?.message).toMatch(/list handler failed/)
   })
 
   it('self-heals after repeated spawn failures instead of latching unavailable', async () => {
@@ -736,37 +689,39 @@ describe('OpenCodeSqliteWorkerClient', () => {
       },
       log() {}
     })
-    // Scan 1: both calls fail closed, keeping synchronous SQLite off the main
-    // thread. The failure is not latched, so a later scan can still recover.
+    // Scan 1 fails closed and terminates only its own context.
     const firstIssues: AiVaultScanIssue[] = []
     const first = await client.list({ context, dbPaths: ['/db'], limit: 10, issues: firstIssues })
     expect(first).toEqual([])
     expect(
       firstIssues.some((issue) => issue.message.includes('background scanner could not start'))
     ).toBe(true)
-    await expect(
-      client.parse({ context, dbPath: '/db', sessionId: 'ses_heal', platform: 'darwin' })
-    ).rejects.toThrow(/background scanner could not start/)
+    expect(context.metrics().terminationReason).toBe('workerUnavailable')
     expect(workers).toHaveLength(0)
 
     // Spawns recover; the next scan must re-probe and use the worker.
     failSpawns = false
+    const recoveredContext = armedScanContext()
     const secondIssues: AiVaultScanIssue[] = []
-    const secondPromise = client.list({
-      context,
-      dbPaths: ['/db'],
-      limit: 10,
-      issues: secondIssues
-    })
-    const worker = workers[0]
-    expect(worker).toBeDefined()
-    worker!.emit('message', {
-      id: worker!.lastId(),
-      ok: true,
-      value: { candidates: [], issues: [] }
-    } satisfies OpenCodeSqliteWorkerResponse)
-    await expect(secondPromise).resolves.toEqual([])
-    expect(secondIssues).toHaveLength(0)
+    try {
+      const secondPromise = client.list({
+        context: recoveredContext,
+        dbPaths: ['/db'],
+        limit: 10,
+        issues: secondIssues
+      })
+      const worker = workers[0]
+      expect(worker).toBeDefined()
+      worker!.emit('message', {
+        id: worker!.lastId(),
+        ok: true,
+        value: { candidates: [], issues: [] }
+      } satisfies OpenCodeSqliteWorkerResponse)
+      await expect(secondPromise).resolves.toEqual([])
+      expect(secondIssues).toHaveLength(0)
+    } finally {
+      recoveredContext.dispose()
+    }
   })
 
   it('drops a cleanly exited idle worker and respawns on the next request', async () => {

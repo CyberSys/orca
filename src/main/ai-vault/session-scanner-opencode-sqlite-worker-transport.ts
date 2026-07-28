@@ -54,6 +54,16 @@ type PendingCall = {
 // Distinguishes "no worker available at all" from a timeout or crash so callers
 // can surface a precise issue while keeping synchronous SQLite off the main thread.
 export class OpenCodeSqliteWorkerUnavailableError extends Error {}
+export class OpenCodeSqliteWorkerTimeoutError extends Error {}
+export class OpenCodeSqliteWorkerFaultError extends Error {
+  constructor(
+    message: string,
+    readonly cause?: Error
+  ) {
+    super(message)
+    this.name = 'OpenCodeSqliteWorkerFaultError'
+  }
+}
 
 /**
  * Worker transport that runs OpenCode SQLite reads on a persistent worker
@@ -150,6 +160,9 @@ export class OpenCodeSqliteWorkerTransport {
       return
     }
     call.context.noteWorkerResponse()
+    if (call.request.kind === 'parse' && response.ok) {
+      call.context.noteParseResponse()
+    }
     if (response.ok) {
       this.settle(call, () => call.resolve(response.value))
     } else {
@@ -167,7 +180,9 @@ export class OpenCodeSqliteWorkerTransport {
     if (this.active !== call) {
       return
     }
-    const error = new Error(`OpenCode SQLite worker timed out after ${call.timeoutMs}ms`)
+    const error = new OpenCodeSqliteWorkerTimeoutError(
+      `OpenCode SQLite worker timed out after ${call.timeoutMs}ms`
+    )
     const failed = call
     this.handle.destroy()
     const shouldTrip = failed.context.noteWorkerTimeout()
@@ -197,7 +212,9 @@ export class OpenCodeSqliteWorkerTransport {
     this.handle.destroy()
     const shouldTrip = failed?.context.noteWorkerDeath() ?? false
     if (failed) {
-      this.settle(failed, () => failed.reject(error))
+      this.settle(failed, () =>
+        failed.reject(new OpenCodeSqliteWorkerFaultError(error.message, error))
+      )
     }
     if (failed && shouldTrip) {
       failed.context.tripCircuit(error)

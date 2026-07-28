@@ -3,18 +3,16 @@
 // of re-reading the whole transcript corpus (issue #9210: 6.7 GB / 109 s cold
 // scans). Disabled unless the composition root calls init; every failure mode
 // degrades to today's cold-scan behavior.
-import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
-  assertJsonTextStructureWithinLimits,
-  JsonTextStructureCapacityError,
-  type JsonTextStructureLimits
-} from '../../shared/json-text-structure-limit'
+  assertSessionParseCacheJsonWithinLimitsCooperatively,
+  serializeSessionParseCacheSnapshotPiecesCooperatively,
+  SESSION_PARSE_CACHE_JSON_LIMITS,
+  SESSION_PARSE_CACHE_MAX_BYTES,
+  SESSION_PARSE_CACHE_SCHEMA_VERSION
+} from './session-parse-cache-snapshot-serialization'
 import { readNodeFileWithinLimit } from '../../shared/node-bounded-file-reader'
-import {
-  JsonStringifyByteLimitError,
-  stringifyJsonWithinByteLimit
-} from '../../shared/node-bounded-json-stringify'
 import {
   MAX_CACHE_ENTRIES,
   seedSessionParseCache,
@@ -23,20 +21,18 @@ import {
   type SessionParseStats
 } from './session-scanner-parse-cache'
 
-// Bump when the persisted entry layout changes; a mismatched file is discarded whole.
-const SCHEMA_VERSION = 1
+export {
+  serializeSessionParseCacheSnapshot,
+  SESSION_PARSE_CACHE_JSON_LIMITS,
+  SESSION_PARSE_CACHE_MAX_BYTES
+} from './session-parse-cache-snapshot-serialization'
+
 // Debounce so back-to-back scans (desktop IPC + runtime RPC) collapse into one write.
 const SAVE_DEBOUNCE_MS = 1_500
 // The payload contains transcript-derived preview text; keep it user-only
 // (mode bits are inert on Windows — the userData ACL grant is the boundary there).
 const PRIVATE_DIRECTORY_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
-export const SESSION_PARSE_CACHE_MAX_BYTES = 64 * 1024 * 1024
-export const SESSION_PARSE_CACHE_JSON_LIMITS = {
-  structuralTokens: 1_000_000,
-  nestingDepth: 32
-} as const
-
 type SessionParseCachePersistenceOptions = {
   filePath: string
   appVersion: string
@@ -119,7 +115,7 @@ async function loadPersistedEntries(current: SessionParseCachePersistenceOptions
       SESSION_PARSE_CACHE_MAX_BYTES
     )
     const raw = buffer.toString('utf8')
-    assertJsonTextStructureWithinLimits(raw, SESSION_PARSE_CACHE_JSON_LIMITS)
+    await assertSessionParseCacheJsonWithinLimitsCooperatively(raw, SESSION_PARSE_CACHE_JSON_LIMITS)
     const entries = parsePersistedFile(JSON.parse(raw), current.appVersion)
     if (entries) {
       seedSessionParseCache(entries)
@@ -161,7 +157,7 @@ function parsePersistedFile(
   const file = parsed as Record<string, unknown>
   // Why: parser output shape/semantics may change between app versions, so a
   // cross-version file is discarded — one cold scan per update is the price.
-  if (file.schemaVersion !== SCHEMA_VERSION || file.appVersion !== appVersion) {
+  if (file.schemaVersion !== SESSION_PARSE_CACHE_SCHEMA_VERSION || file.appVersion !== appVersion) {
     return null
   }
   if (!Array.isArray(file.entries)) {
@@ -215,69 +211,19 @@ function parsePersistedEntry(item: unknown): [string, PersistedSessionParseCache
   ]
 }
 
-// Why: hitting a capacity limit must degrade, not disable. Serializing the whole
-// snapshot and giving up would leave the old file in place and every later save
-// failing the same way, silently turning the #9210 cache back off for good. The
-// newest entries are the ones a restart actually reuses, so drop the oldest half
-// and retry until it fits.
-//
-// Both limits are checked against the same limits the load path applies: a
-// snapshot we cannot read back would delete itself on next launch and silently
-// disable the cache. The structure pass is not free (it scans the serialized
-// text), so `keeps a full snapshot loadable` pins the headroom a normal
-// full-size snapshot has, and this stays a guard rather than a routine trimmer.
-export function serializeSessionParseCacheSnapshot(
-  entries: [string, PersistedSessionParseCacheEntry][],
-  appVersion: string,
-  maxBytes: number = SESSION_PARSE_CACHE_MAX_BYTES,
-  jsonLimits: JsonTextStructureLimits = SESSION_PARSE_CACHE_JSON_LIMITS
-): string | null {
-  let retained = entries
-  while (retained.length > 0) {
-    try {
-      const { serialized } = stringifyJsonWithinByteLimit(
-        { schemaVersion: SCHEMA_VERSION, appVersion, entries: retained },
-        maxBytes
-      )
-      assertJsonTextStructureWithinLimits(serialized, jsonLimits)
-      if (retained.length !== entries.length) {
-        console.debug(
-          `[ai-vault] session parse cache trimmed to ${retained.length}/${entries.length} entries to fit its size limits`
-        )
-      }
-      return serialized
-    } catch (err) {
-      if (!isCapacityError(err)) {
-        throw err
-      }
-      // Snapshot order is oldest→newest; keep the newest half. At most
-      // log2(MAX_CACHE_ENTRIES) attempts, and only ever on the failure path.
-      retained = retained.slice(Math.ceil(retained.length / 2))
-    }
-  }
-  // Nothing fit, so a single entry — not aggregate pressure — is the problem.
-  // Trimming cannot help; keep the previous snapshot and say so.
-  console.debug('[ai-vault] session parse cache save skipped: no entry subset fits its size limits')
-  return null
-}
-
-function isCapacityError(err: unknown): boolean {
-  return err instanceof JsonStringifyByteLimitError || err instanceof JsonTextStructureCapacityError
-}
-
 async function persistSnapshot(current: SessionParseCachePersistenceOptions): Promise<void> {
   const directory = dirname(current.filePath)
   const tempPath = join(directory, `session-parse-cache-${process.pid}-${Date.now()}.tmp`)
   try {
-    const payload = serializeSessionParseCacheSnapshot(
+    const snapshot = await serializeSessionParseCacheSnapshotPiecesCooperatively(
       snapshotSessionParseCacheForPersistence(),
       current.appVersion
     )
-    if (payload === null) {
+    if (snapshot === null) {
       return
     }
     await mkdir(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
-    await writeFile(tempPath, payload, { mode: PRIVATE_FILE_MODE })
+    await writeSessionParseCacheSnapshot(tempPath, snapshot.pieces)
     // Atomic on POSIX; on Windows a rename racing an open handle fails and is
     // caught below (save lost, never a torn file).
     await rename(tempPath, current.filePath)
@@ -286,5 +232,19 @@ async function persistSnapshot(current: SessionParseCachePersistenceOptions): Pr
     // it becomes an unhandled rejection. Worst case is the no-file case.
     await rm(tempPath, { force: true }).catch(() => {})
     console.debug('[ai-vault] session parse cache save failed', err)
+  }
+}
+
+async function writeSessionParseCacheSnapshot(
+  tempPath: string,
+  pieces: readonly string[]
+): Promise<void> {
+  const handle = await open(tempPath, 'w', PRIVATE_FILE_MODE)
+  try {
+    for (const piece of pieces) {
+      await handle.writeFile(piece)
+    }
+  } finally {
+    await handle.close()
   }
 }

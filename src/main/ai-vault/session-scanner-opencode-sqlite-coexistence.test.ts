@@ -286,7 +286,7 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
     workerMock.parseCalls = 0
     workerMock.listOverride = async (args) => {
       args.context.tripCircuit(new Error('worker died'))
-      return candidates
+      return []
     }
     const rescan = await scanAiVaultSessions({
       ...roots,
@@ -300,7 +300,9 @@ describe('scanAiVaultSessions — OpenCode SQLite + legacy file coexistence', ()
       'cached-a',
       'cached-b'
     ])
-    expect(rescan.issues).toEqual([])
+    expect(rescan.issues.map((issue) => issue.message)).toEqual([
+      'OpenCode history could not be checked against its SQLite database, so some sessions may be missing or out of date.'
+    ])
   })
 
   // Why: the SQLite listing is the only producer of synthetic candidates, so a

@@ -1,4 +1,5 @@
 import { sessionParseCacheEntries } from './session-scanner-parse-cache'
+import { splitOpenCodeSqliteCandidate } from './session-scanner-opencode-sqlite-paths'
 import type { SessionFileCandidate } from './session-scanner-types'
 
 /**
@@ -22,17 +23,23 @@ export function cachedOpenCodeSqliteCandidates(args: {
   if (args.dbPaths.length === 0 || args.limit <= 0) {
     return []
   }
-  const prefixes = args.dbPaths.map((dbPath) => `${dbPath}#`)
-  const candidates: SessionFileCandidate[] = []
+  const dbPathRanks = new Map(args.dbPaths.map((dbPath, index) => [dbPath, index]))
+  const candidatesBySessionId = new Map<
+    string,
+    { candidate: SessionFileCandidate; dbPathRank: number }
+  >()
   for (const [path, entry] of sessionParseCacheEntries()) {
+    const parsed = splitOpenCodeSqliteCandidate(path)
+    const dbPathRank = parsed ? dbPathRanks.get(parsed.dbPath) : undefined
     if (
       entry.platform !== args.platform ||
       entry.session === null ||
-      !prefixes.some((prefix) => path.startsWith(prefix))
+      !parsed ||
+      dbPathRank === undefined
     ) {
       continue
     }
-    candidates.push({
+    const candidate: SessionFileCandidate = {
       agent: 'opencode',
       codexHome: null,
       file: {
@@ -41,9 +48,19 @@ export function cachedOpenCodeSqliteCandidates(args: {
         modifiedAt: new Date(entry.mtimeMs).toISOString(),
         ...(entry.sizeBytes === null ? {} : { sizeBytes: entry.sizeBytes })
       }
-    })
+    }
+    const previous = candidatesBySessionId.get(parsed.sessionId)
+    if (
+      !previous ||
+      candidate.file.mtimeMs > previous.candidate.file.mtimeMs ||
+      (candidate.file.mtimeMs === previous.candidate.file.mtimeMs &&
+        dbPathRank < previous.dbPathRank)
+    ) {
+      candidatesBySessionId.set(parsed.sessionId, { candidate, dbPathRank })
+    }
   }
-  return candidates
+  return [...candidatesBySessionId.values()]
+    .map(({ candidate }) => candidate)
     .sort((left, right) => right.file.mtimeMs - left.file.mtimeMs)
     .slice(0, args.limit)
 }

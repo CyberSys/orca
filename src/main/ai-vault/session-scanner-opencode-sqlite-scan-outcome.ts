@@ -37,17 +37,15 @@ export function recordOpenCodeSqliteScanOutcome(args: {
   if (message) {
     args.issues.push({ agent: 'opencode', path: 'opencode.db', message })
   }
-  // Why: a deadline expiry normally means partial progress worth resuming, so it
-  // does not back off. But a scan that ran its whole budget without a single
-  // worker answer cached nothing, and the next scan would burn the same budget
-  // again — that is a hard failure whichever limiter happened to fire first.
-  if (metrics.terminationReason === 'deadline' && !metrics.workerAnswered) {
+  // A list response caches nothing. Only a completed parse proves the next scan
+  // can advance instead of replaying the same list-and-deadline cycle.
+  if (metrics.terminationReason === 'deadline' && !metrics.parseAnswered) {
     noteOpenCodeSqliteScanHardFailure()
     return
   }
   // Only a scan that got through its SQLite work clears the process-wide
   // backoff; a scan that never had any to do says nothing either way.
-  if (metrics.terminationReason === null && !metrics.workOmitted) {
+  if (metrics.sqliteSourcePresent && metrics.terminationReason === null && !metrics.workOmitted) {
     noteOpenCodeSqliteScanProgress()
   }
 }
@@ -92,6 +90,8 @@ function terminationCauseMessage(metrics: OpenCodeSqliteScanMetrics): string | n
       return 'Some OpenCode history was skipped because its SQLite database was too slow to read.'
     case 'workerUnavailable':
       return 'Some OpenCode history was skipped because its background scanner could not start.'
+    case 'listFailed':
+      return 'Some OpenCode history was skipped because its SQLite session listing failed.'
     // 'cooldown' returned above, so it is already narrowed out here.
     case 'scanEnded':
     case null:
