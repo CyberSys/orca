@@ -22,12 +22,11 @@ import {
   waitForTerminalImeBytes
 } from './terminal-ime-byte-reader'
 
-const DEFAULT_REPETITIONS = 5
+const DEFAULT_REPETITIONS = 30
 const MAX_REPETITIONS = 30
 const DEFAULT_KEY_DELAY_MS = 1
 const MAX_KEY_DELAY_MS = 100
 
-test.describe.configure({ mode: 'serial' })
 test.use({
   orcaAppExtraEnv: {
     GTK_IM_MODULE: 'ibus',

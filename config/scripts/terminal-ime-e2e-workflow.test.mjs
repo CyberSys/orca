@@ -28,6 +28,7 @@ describe('terminal IME e2e workflow', () => {
       .filter((run) => typeof run === 'string')
     const installRun = runs.find((run) => run.includes('apt-get install'))
 
+    expect(installRun).toBeDefined()
     expect(installRun).toContain('ibus-hangul')
     expect(installRun).toContain('xdotool')
     expect(installRun).toContain('xfwm4')
@@ -42,7 +43,7 @@ describe('terminal IME e2e workflow', () => {
     const deterministicIndex = runs.findIndex((run) =>
       run.includes('terminal-ime-exact-byte.spec.ts')
     )
-    const nativeIndex = runs.indexOf('pnpm run test:e2e:terminal-ime-native')
+    const nativeIndex = runs.findIndex((run) => run.includes('test:e2e:terminal-ime-native'))
 
     expect(deterministicIndex).toBeGreaterThanOrEqual(0)
     expect(nativeIndex).toBeGreaterThan(deterministicIndex)

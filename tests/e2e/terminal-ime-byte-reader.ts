@@ -67,9 +67,13 @@ export async function waitForTerminalImeBytes(
       async () => {
         const terminal = await getTerminalContent(page, 100_000)
         const resultPattern = new RegExp(`${reader.resultPrefix}:(\\d+):([0-9a-f]+)`, 'g')
-        results = [...terminal.matchAll(resultPattern)]
-          .sort((left, right) => Number(left[1]) - Number(right[1]))
-          .map((match) => match[2])
+        const bySequence = new Map<number, string>()
+        for (const match of terminal.matchAll(resultPattern)) {
+          bySequence.set(Number(match[1]), match[2])
+        }
+        results = [...bySequence.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, hex]) => hex)
         return results.length
       },
       { timeout: timeoutMs, message: 'IME byte reader did not receive every expected line' }

@@ -57,7 +57,13 @@ async function stopOwnedProcessGroup(processGroupId) {
     await delay(100)
   }
 
-  process.kill(-processGroupId, 'SIGKILL')
+  try {
+    process.kill(-processGroupId, 'SIGKILL')
+  } catch (error) {
+    if (error?.code !== 'ESRCH') {
+      throw error
+    }
+  }
   await delay(100)
   return processGroupMembers(processGroupId)
 }
@@ -281,5 +287,12 @@ async function runOuter() {
 }
 
 const insideSession = process.argv[2] === insideSessionFlag
-const exitCode = insideSession ? await runInsideSession(process.argv[3]) : await runOuter()
-process.exitCode = exitCode
+try {
+  if (insideSession && !process.argv[3]) {
+    throw new Error(`${insideSessionFlag} requires an evidence directory argument`)
+  }
+  process.exitCode = insideSession ? await runInsideSession(process.argv[3]) : await runOuter()
+} catch (error) {
+  console.error(`[terminal-ime] ${error instanceof Error ? error.message : String(error)}`)
+  process.exitCode = 1
+}

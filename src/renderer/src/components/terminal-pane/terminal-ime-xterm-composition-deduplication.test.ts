@@ -123,6 +123,14 @@ function dispatchKeypress(textarea: HTMLTextAreaElement, text: string): void {
   textarea.dispatchEvent(keypress)
 }
 
+function getPendingFinalizations(terminal: Terminal): unknown[] {
+  return (
+    terminal as unknown as {
+      _core: { _compositionHelper: { _pendingCompositionFinalizations: unknown[] } }
+    }
+  )._core._compositionHelper._pendingCompositionFinalizations
+}
+
 describe('xterm IME composition de-duplication', () => {
   beforeEach(() => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
@@ -167,6 +175,26 @@ describe('xterm IME composition de-duplication', () => {
     await nextEventLoop()
 
     expect(emitted.join('')).toBe('한abc글\r')
+    terminal.dispose()
+  })
+
+  it('leaves ordinary ASCII outside composition bookkeeping', () => {
+    const { emitted, terminal, textarea } = openTerminal()
+
+    typeObservedAscii(textarea, 'abcdefghijklmno')
+
+    expect(emitted.join('')).toBe('abcdefghijklmno')
+    expect(getPendingFinalizations(terminal)).toHaveLength(0)
+    terminal.dispose()
+  })
+
+  it.each(['日本語', '中文'])('preserves a propagated %s IME commit', async (text) => {
+    const { emitted, terminal, textarea } = openTerminal()
+
+    typeObservedIbusCommit(textarea, text)
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe(text)
     terminal.dispose()
   })
 
@@ -280,6 +308,61 @@ describe('xterm IME composition de-duplication', () => {
 
     expect(emitted.join('')).toBe('가가\r')
     terminal.dispose()
+  })
+
+  it('ignores a duplicate compositionend for the same transaction', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+
+    startComposition(textarea, '한')
+    dispatchCompositionEvent(textarea, 'compositionend', '한')
+    dispatchCompositionEvent(textarea, 'compositionend', '한')
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe('한')
+    expect(getPendingFinalizations(terminal)).toHaveLength(0)
+    terminal.dispose()
+  })
+
+  it('bounds pending finalizations during synchronous composition turnover', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+
+    for (let index = 0; index < 20; index++) {
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+      dispatchCompositionEvent(textarea, 'compositionstart')
+      dispatchCompositionEvent(textarea, 'compositionupdate', '가')
+      textarea.value += '가'
+      dispatchCompositionEvent(textarea, 'compositionend', '가')
+      expect(getPendingFinalizations(terminal).length).toBeLessThanOrEqual(1)
+    }
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe('가'.repeat(20))
+    terminal.dispose()
+  })
+
+  it('flushes a pending commit before blur clears the textarea', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+    terminal.focus()
+    startComposition(textarea, '한')
+
+    dispatchCompositionEvent(textarea, 'compositionend', '한')
+    textarea.blur()
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe('한')
+    terminal.dispose()
+  })
+
+  it('does not emit deferred composition data after disposal', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+    startComposition(textarea, '한')
+    dispatchCompositionEvent(textarea, 'compositionend', '한')
+
+    terminal.dispose()
+    await nextEventLoop()
+
+    expect(emitted).toEqual([])
+    expect(getPendingFinalizations(terminal)).toHaveLength(0)
   })
 
   it('emits a post-composition IBus Hangul keypress only once', async () => {

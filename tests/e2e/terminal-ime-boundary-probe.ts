@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import type { Page, TestInfo } from '@stablyai/playwright-test'
 
 export type TerminalImeDomEvent = {
@@ -109,12 +111,20 @@ export async function attachTerminalImeBoundaryEvidence(
   name: string,
   extra: Record<string, unknown> = {}
 ): Promise<void> {
+  const body = `${JSON.stringify(
+    { ...extra, trace: await readTerminalImeBoundaryTrace(page) },
+    null,
+    2
+  )}\n`
   await testInfo.attach(`${name}.json`, {
-    body: `${JSON.stringify(
-      { ...extra, trace: await readTerminalImeBoundaryTrace(page) },
-      null,
-      2
-    )}\n`,
+    body,
     contentType: 'application/json'
   })
+  const evidenceDir = path.join(process.cwd(), 'test-results', 'terminal-ime-evidence')
+  const title = testInfo.title
+    .replaceAll(/[^a-z0-9]+/gi, '-')
+    .replaceAll(/^-|-$/g, '')
+    .toLowerCase()
+  mkdirSync(evidenceDir, { recursive: true })
+  writeFileSync(path.join(evidenceDir, `${name}-${title}.json`), body)
 }
