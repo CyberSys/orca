@@ -198,6 +198,7 @@ import {
   confirmsMirroredTabSelection,
   type AppliedSnapshotMarker
 } from '../../../../src/session/session-tab-snapshot-gate'
+import { useInitialSessionTerminalAutoCreate } from '../../../../src/session/use-initial-session-terminal-autocreate'
 import {
   buildMarkdownDiskFallbackDoc,
   shouldReadMarkdownFromDiskAfterReadTabFailure
@@ -1033,6 +1034,8 @@ export default function SessionScreen() {
   const handleCreateBrowserRef = useRef<((rawUrl?: string) => Promise<boolean>) | null>(null)
 
   const initialEmptySessionAutoCreateRef = useRef<string | null>(null)
+  // Why: emptiness after a populated list is a close, not a cold hydrate — see initial-session-terminal.
+  const sawSessionTabsRef = useRef(false)
   const markdownSaveSeqRef = useRef<Map<string, number>>(new Map())
   const markdownSaveInFlightRef = useRef<Set<string>>(new Set())
   const subscribeSeqRef = useRef<Map<string, number>>(new Map())
@@ -1774,6 +1777,7 @@ export default function SessionScreen() {
         nextTabs = [...orphanedDraftTabs, ...nextTabs]
       }
       sessionTabsRef.current = nextTabs
+      sawSessionTabsRef.current ||= nextTabs.length > 0
       // Why: subscribe snapshots often repeat identical payloads; skip re-set to avoid a subscription teardown/replay loop.
       setSessionTabs((prev) => (mobileSessionTabsEqual(prev, nextTabs) ? prev : nextTabs))
       const terminalTabs = getTerminalRecordsFromSessionTabs(nextTabs)
@@ -2633,6 +2637,7 @@ export default function SessionScreen() {
     pendingBrowserFocusPageIdRef.current = null
     pendingTerminalActivationAttemptRef.current = null
     initialEmptySessionAutoCreateRef.current = null
+    sawSessionTabsRef.current = false
     terminalDiagnosticsRef.current.resetRoute()
     appliedSnapshotMarkerRef.current = { epoch: null, version: -1 }
     closedTabTombstonesRef.current.clear()
@@ -4227,22 +4232,19 @@ export default function SessionScreen() {
   const showEmptyState =
     connState === 'connected' && terminalsLoaded && visibleTabs.length === 0 && !activeHandle
 
-  useEffect(() => {
-    if (
-      !client ||
-      !showEmptyState ||
-      creating ||
-      creatingBrowser ||
-      creatingMarkdown ||
-      initialEmptySessionAutoCreateRef.current === worktreeId
-    ) {
-      return
-    }
-    // Why: a sleeping/new workspace can hydrate with zero tabs; create the first terminal once so mobile isn't blank.
-    initialEmptySessionAutoCreateRef.current = worktreeId
-    setCreateError('')
-    void handleCreateTerminal()
-  }, [client, creating, creatingBrowser, creatingMarkdown, showEmptyState, worktreeId])
+  // Why: a sleeping/new workspace can hydrate with zero tabs; create the first terminal once so mobile isn't blank.
+  useInitialSessionTerminalAutoCreate({
+    client,
+    connState,
+    terminalsLoaded,
+    visibleTabCount: visibleTabs.length,
+    activeHandle,
+    createInFlight: creating || creatingBrowser || creatingMarkdown,
+    sawSessionTabsRef,
+    autoCreatedForWorktreeRef: initialEmptySessionAutoCreateRef,
+    worktreeId,
+    createTerminal: () => void handleCreateTerminal()
+  })
 
   // Why: reconnect trickles to 90s at its give-up cap; surface tap-to-retry so recovery needn't wait it out (issue #5049).
   const connectionVerdict = classifyConnection({
