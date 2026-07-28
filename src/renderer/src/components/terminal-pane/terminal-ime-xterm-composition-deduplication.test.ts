@@ -445,6 +445,25 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
+  it('ignores a stale compositionend after the next transaction starts', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+
+    dispatchCompositionEvent(textarea, 'compositionstart')
+    dispatchCompositionEvent(textarea, 'compositionupdate', 'A')
+    textarea.value = 'A'
+    textarea.setSelectionRange(1, 1)
+    dispatchCompositionEvent(textarea, 'compositionend', 'A')
+
+    dispatchCompositionEvent(textarea, 'compositionstart')
+    dispatchCompositionEvent(textarea, 'compositionupdate', 'B')
+    dispatchCompositionEvent(textarea, 'compositionend', 'A')
+    dispatchCompositionEvent(textarea, 'compositionend', 'B')
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe('AB')
+    terminal.dispose()
+  })
+
   it('bounds pending finalizations during synchronous composition turnover', async () => {
     const { emitted, terminal, textarea } = openTerminal()
 
