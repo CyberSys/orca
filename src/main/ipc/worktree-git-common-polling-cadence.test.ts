@@ -153,6 +153,35 @@ describe('adaptive git-common poll cadence', () => {
     await subscription.unsubscribe()
   })
 
+  it('stops polling while the window is hidden and forces a scan on resume', async () => {
+    vi.useFakeTimers()
+    const visibility = createVisibilityHarness()
+    const forced: boolean[] = []
+    const subscription = startAdaptiveGitCommonPoller({
+      cadence: { activeIntervalMs: 100, idleIntervalMs: 500 },
+      visibility: visibility.source,
+      poll: async (forceFullScan) => {
+        forced.push(forceFullScan)
+        return { changed: false }
+      }
+    })
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(forced).toEqual([false])
+    visibility.hide()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(forced).toEqual([false])
+
+    visibility.show()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(forced).toEqual([false, true])
+    // Resume restarts the active cadence rather than the idle one it parked on.
+    await vi.advanceTimersByTimeAsync(100)
+    expect(forced).toEqual([false, true, false])
+
+    await subscription.unsubscribe()
+  })
+
   it('replaces an outstanding idle timer when native activity resets cadence', async () => {
     vi.useFakeTimers()
     const poll = vi.fn(async () => ({ changed: false }))

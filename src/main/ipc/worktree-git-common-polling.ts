@@ -28,7 +28,7 @@ function statSignature(s: { mtimeMs: number; ctimeMs: number; ino: number }): st
   return `${s.mtimeMs}:${s.ctimeMs}:${s.ino}`
 }
 
-function isMissingPathError(error: unknown): boolean {
+export function isMissingPathError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code
   return code === 'ENOENT' || code === 'ENOTDIR'
 }

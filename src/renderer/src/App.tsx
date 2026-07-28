@@ -149,8 +149,10 @@ import {
   partitionSshStartupReconnectTargets,
   reconnectSshTargetsForRendererStartup,
   resolveSshStartupActiveWorkspaceId,
+  shouldStartBackgroundSshReconnect,
   type SshStartupReconnectBatchResult
 } from './startup/ssh-startup-reconnect'
+import { connectSshTargetDeduplicated } from './lib/ssh-target-connect-deduplication'
 import { shouldRenderPetOverlay } from './components/pet/pet-overlay-visibility'
 import { applyDocumentTheme } from './lib/document-theme'
 import { getSystemPrefersDark } from './lib/terminal-theme'
@@ -1026,7 +1028,10 @@ function App(): React.JSX.Element {
                   targetIds,
                   budgetMs: SSH_RECONNECT_TIMEOUT_MS,
                   signal: abortController.signal,
-                  connect: (targetId) => window.api.ssh.connect({ targetId }),
+                  connect: (targetId) =>
+                    connectSshTargetDeduplicated(targetId, () =>
+                      window.api.ssh.connect({ targetId })
+                    ),
                   publishState: actions.setSshConnectionState,
                   onFailure: (targetId, error) => {
                     console.warn(`SSH auto-reconnect failed for ${targetId}:`, error)
@@ -1035,23 +1040,29 @@ function App(): React.JSX.Element {
               const finalizeCompletedTargets = async (
                 results: readonly SshStartupReconnectBatchResult[]
               ): Promise<void> => {
-                for (const { targetId, outcome } of results) {
-                  if (outcome !== 'completed' || abortController.signal.aborted) {
-                    continue
-                  }
-                  // Why: older/wrapped providers may return no connect state; poll once before releasing the deferred pane gate.
-                  try {
-                    const state = await window.api.ssh.getState({ targetId })
-                    if (state?.status === 'connected') {
-                      actions.setSshConnectionState(targetId, state)
-                    }
-                  } catch {
-                    /* best-effort */
-                  }
-                  if (!abortController.signal.aborted) {
-                    actions.removeDeferredSshReconnectTarget(targetId)
-                  }
-                }
+                // Why: the critical batch awaits this on the startup path, so probe every target
+                // at once instead of paying one IPC round-trip per target serially.
+                await Promise.all(
+                  results
+                    .filter(({ outcome }) => outcome === 'completed')
+                    .map(async ({ targetId }) => {
+                      if (abortController.signal.aborted) {
+                        return
+                      }
+                      // Why: older/wrapped providers may return no connect state; poll once before releasing the deferred pane gate.
+                      try {
+                        const state = await window.api.ssh.getState({ targetId })
+                        if (state?.status === 'connected') {
+                          actions.setSshConnectionState(targetId, state)
+                        }
+                      } catch {
+                        /* best-effort */
+                      }
+                      if (!abortController.signal.aborted) {
+                        actions.removeDeferredSshReconnectTarget(targetId)
+                      }
+                    })
+                )
               }
 
               const criticalResults = await timeRendererStartupStep(
@@ -1065,9 +1076,10 @@ function App(): React.JSX.Element {
               )
               await finalizeCompletedTargets(criticalResults)
               if (
-                criticalResults.every(({ outcome }) => outcome === 'completed') &&
-                backgroundTargetIds.length > 0 &&
-                !abortController.signal.aborted
+                shouldStartBackgroundSshReconnect({
+                  backgroundTargetCount: backgroundTargetIds.length,
+                  aborted: abortController.signal.aborted
+                })
               ) {
                 void timeRendererStartupStep('ssh-reconnect-background', () =>
                   reconnectTargets(backgroundTargetIds)

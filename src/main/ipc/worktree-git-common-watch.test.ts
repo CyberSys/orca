@@ -44,6 +44,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 })
 
 const POLL_MS = 25
+// Mirrors the production ratio in worktree-base-directory-poller.
+const IDLE_POLL_MS = POLL_MS * 5
+const BACKSTOP_MS = POLL_MS * 15
 
 const alwaysVisible: WorktreePollerWindowVisibility = {
   isWindowVisible: () => true,
@@ -135,7 +138,10 @@ describe('worktree git-common narrow watch (darwin)', () => {
       (events) => received.push(events),
       POLL_MS,
       'darwin',
-      alwaysVisible
+      alwaysVisible,
+      undefined,
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
     cleanups.push(() => watch.unsubscribe())
   }
@@ -286,7 +292,10 @@ describe('worktree git-common narrow watch (darwin)', () => {
       (events) => received.push(events),
       POLL_MS,
       'darwin',
-      visibility.source
+      visibility.source,
+      undefined,
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
     cleanups.push(() => watch.unsubscribe())
     visibility.hide()
@@ -350,7 +359,10 @@ describe('worktree git-common narrow watch (darwin)', () => {
       (events) => received.push(events),
       POLL_MS,
       'darwin',
-      visibility.source
+      visibility.source,
+      undefined,
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
     cleanups.push(() => watch.unsubscribe())
 
@@ -370,7 +382,10 @@ describe('worktree git-common narrow watch (darwin)', () => {
       () => {},
       POLL_MS,
       'darwin',
-      visibility.source
+      visibility.source,
+      undefined,
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
 
     // Narrow watch + primary-metadata poll each park on window visibility.
@@ -393,7 +408,9 @@ describe('worktree git-common narrow watch (darwin)', () => {
       POLL_MS,
       'darwin',
       visibility.source,
-      () => fullScans.push(Date.now())
+      () => fullScans.push(Date.now()),
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
     cleanups.push(() => watch.unsubscribe())
 
@@ -424,7 +441,10 @@ describe('worktree git-common narrow watch (darwin)', () => {
       (events) => received.push(events),
       POLL_MS,
       'darwin',
-      alwaysVisible
+      alwaysVisible,
+      undefined,
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
     await watch.unsubscribe()
     expect(childSubscriptions[0].unsubscribe).toHaveBeenCalledTimes(1)
@@ -474,7 +494,9 @@ describe('worktree git-common polling gate (non-darwin)', () => {
       POLL_MS,
       'linux',
       visibility,
-      onFullScan
+      onFullScan,
+      IDLE_POLL_MS,
+      BACKSTOP_MS
     )
     cleanups.push(() => watch.unsubscribe())
   }

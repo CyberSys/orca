@@ -5,6 +5,7 @@ import {
   reconnectSshTargetForRendererStartup,
   reconnectSshTargetsForRendererStartup,
   resolveSshStartupActiveWorkspaceId,
+  shouldStartBackgroundSshReconnect,
   SshStartupReconnectScheduler
 } from './ssh-startup-reconnect'
 
@@ -138,6 +139,41 @@ describe('partitionSshStartupReconnectTargets', () => {
 })
 
 describe('reconnectSshTargetsForRendererStartup', () => {
+  it('reconnects a healthy background target after a critical target fails', async () => {
+    const scheduler = new SshStartupReconnectScheduler(1)
+    const starts: string[] = []
+    const connect = async (targetId: string): Promise<SshConnectionState> => {
+      starts.push(targetId)
+      if (targetId === 'ssh-critical') {
+        throw new Error('Authentication failed')
+      }
+      return stateFor(targetId)
+    }
+    const reconnect = (targetIds: readonly string[]) =>
+      reconnectSshTargetsForRendererStartup({
+        targetIds,
+        budgetMs: 1_000,
+        signal: new AbortController().signal,
+        scheduler,
+        connect,
+        publishState: vi.fn(),
+        onFailure: vi.fn()
+      })
+
+    const criticalResults = await reconnect(['ssh-critical'])
+    expect(criticalResults).toEqual([{ targetId: 'ssh-critical', outcome: 'failed' }])
+    expect(
+      shouldStartBackgroundSshReconnect({
+        backgroundTargetCount: 1,
+        aborted: false
+      })
+    ).toBe(true)
+    await expect(reconnect(['ssh-background'])).resolves.toEqual([
+      { targetId: 'ssh-background', outcome: 'completed' }
+    ])
+    expect(starts).toEqual(['ssh-critical', 'ssh-background'])
+  })
+
   it('bounds raw concurrent attempts and starts queued targets as slots settle', async () => {
     const scheduler = new SshStartupReconnectScheduler(2)
     const controls = new Map<string, ReturnType<typeof controlledPromise<SshConnectionState>>>()
@@ -203,6 +239,44 @@ describe('reconnectSshTargetsForRendererStartup', () => {
       { targetId: 'ssh-queued', outcome: 'not-started-budget' }
     ])
     expect(starts).toEqual(['ssh-stalled'])
+  })
+
+  it("frees a hung target's slot at its deadline so later batches still run", async () => {
+    vi.useFakeTimers()
+    const scheduler = new SshStartupReconnectScheduler(1)
+    const starts: string[] = []
+    const hungResult = reconnectSshTargetsForRendererStartup({
+      targetIds: ['ssh-hung'],
+      budgetMs: 1_000,
+      signal: new AbortController().signal,
+      scheduler,
+      connect: (targetId) => {
+        starts.push(targetId)
+        return new Promise<SshConnectionState>(() => {})
+      },
+      publishState: vi.fn(),
+      onFailure: vi.fn()
+    })
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await expect(hungResult).resolves.toEqual([{ targetId: 'ssh-hung', outcome: 'timed-out' }])
+
+    const nextResult = reconnectSshTargetsForRendererStartup({
+      targetIds: ['ssh-next'],
+      budgetMs: 1_000,
+      signal: new AbortController().signal,
+      scheduler,
+      connect: async (targetId) => {
+        starts.push(targetId)
+        return stateFor(targetId)
+      },
+      publishState: vi.fn(),
+      onFailure: vi.fn()
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(nextResult).resolves.toEqual([{ targetId: 'ssh-next', outcome: 'completed' }])
+    expect(starts).toEqual(['ssh-hung', 'ssh-next'])
   })
 
   it('cancels queued results and suppresses late state publication', async () => {
@@ -320,5 +394,28 @@ describe('reconnectSshTargetsForRendererStartup', () => {
     first.resolve(stateFor('ssh-old'))
     await expect(nextResult).resolves.toEqual([{ targetId: 'ssh-new', outcome: 'completed' }])
     expect(starts).toEqual(['ssh-old', 'ssh-new'])
+  })
+})
+
+describe('shouldStartBackgroundSshReconnect', () => {
+  it('requires a background target and a live startup signal', () => {
+    expect(
+      shouldStartBackgroundSshReconnect({
+        backgroundTargetCount: 0,
+        aborted: false
+      })
+    ).toBe(false)
+    expect(
+      shouldStartBackgroundSshReconnect({
+        backgroundTargetCount: 1,
+        aborted: true
+      })
+    ).toBe(false)
+    expect(
+      shouldStartBackgroundSshReconnect({
+        backgroundTargetCount: 1,
+        aborted: false
+      })
+    ).toBe(true)
   })
 })

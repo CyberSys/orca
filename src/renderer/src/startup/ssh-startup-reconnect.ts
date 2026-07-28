@@ -21,6 +21,13 @@ export type SshStartupReconnectBatchResult = {
   outcome: SshStartupReconnectOutcome
 }
 
+export function shouldStartBackgroundSshReconnect(args: {
+  backgroundTargetCount: number
+  aborted: boolean
+}): boolean {
+  return !args.aborted && args.backgroundTargetCount > 0
+}
+
 type ScheduledReconnect = {
   targetId: string
   deadline: number
@@ -119,6 +126,9 @@ export class SshStartupReconnectScheduler {
           task.onFailure(error)
           finish('timed-out')
         }
+        // Why: connect gets no abort signal, so a hung IPC would hold its slot forever and
+        // three of them would starve every later batch. The deadline caps the hold instead.
+        this.release(task)
       }, budgetMs)
       this.queue.push(task)
       this.drain()

@@ -14,6 +14,7 @@ import {
   type GitCommonPollingCadence
 } from './worktree-git-common-poll-cadence'
 import {
+  isMissingPathError,
   PRIMARY_CHECKOUT_METADATA_FILES,
   startGitCommonPolling
 } from './worktree-git-common-polling'
@@ -36,11 +37,6 @@ import {
 // Why: branch switches and commits made in the primary checkout rewrite these
 // top-level files (linked-worktree equivalents live under `worktrees/`).
 // Deliberately excludes FETCH_HEAD-style churn that carries no status change.
-function isMissingPathError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code
-  return code === 'ENOENT' || code === 'ENOTDIR'
-}
-
 async function snapshotPrimaryCheckoutMetadata(
   commonDirPath: string
 ): Promise<Map<string, number>> {
@@ -82,7 +78,9 @@ function diffMtimeMap(
 async function startSnapshotDiffPoller(
   takeSnapshot: () => Promise<Map<string, number>>,
   onEvents: (events: WorktreeBasePollEvent[]) => void,
-  cadence: GitCommonPollingCadence,
+  // No index backstop: this poller re-stats every file each tick, so there is no gated
+  // read for a forced full scan to unblock.
+  cadence: Pick<GitCommonPollingCadence, 'activeIntervalMs' | 'idleIntervalMs'>,
   visibility: WorktreePollerWindowVisibility,
   onFullScan: (() => void) | undefined,
   onBaselineRecovered: () => void
@@ -296,9 +294,11 @@ export async function startGitCommonWatch(
   pollIntervalMs: number,
   platform: NodeJS.Platform,
   visibility: WorktreePollerWindowVisibility,
-  onFullScan?: () => void,
-  idlePollIntervalMs = pollIntervalMs * 5,
-  indexBackstopIntervalMs = pollIntervalMs * 15
+  onFullScan: (() => void) | undefined,
+  // Why: required, not defaulted — the interval policy lives with the base-poller constants;
+  // a local multiplier default here would silently desync when either constant changes.
+  idlePollIntervalMs: number,
+  indexBackstopIntervalMs: number
 ): Promise<WorktreeBaseSubscription> {
   const cadence: GitCommonPollingCadence = {
     activeIntervalMs: pollIntervalMs,
