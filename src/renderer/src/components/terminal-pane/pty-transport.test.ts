@@ -813,6 +813,94 @@ describe('createIpcPtyTransport', () => {
     }
   })
 
+  it('keeps the latest title ahead of status-only overflow', async () => {
+    vi.useFakeTimers()
+    try {
+      const { createPtyOutputProcessor, MAX_PENDING_PTY_SIDE_EFFECTS } =
+        await import('./pty-transport')
+      const onTitleChange = vi.fn()
+      const onAgentStatus = vi.fn()
+      const processor = createPtyOutputProcessor({ onTitleChange, onAgentStatus })
+      const callbacks = { onData: vi.fn() }
+
+      processor.processData('\x1b]0;latest-title\x07', callbacks)
+      for (let index = 0; index < MAX_PENDING_PTY_SIDE_EFFECTS; index += 1) {
+        processor.processData(
+          `\x1b]9999;{"state":"working","prompt":"status-${index}"}\x07`,
+          callbacks
+        )
+      }
+      processor.flushPendingSideEffects()
+
+      expect(onTitleChange).toHaveBeenCalledTimes(1)
+      expect(onTitleChange).toHaveBeenCalledWith('latest-title', 'latest-title')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps title and stale-probe order through status-only overflow', async () => {
+    vi.useFakeTimers()
+    try {
+      const { createPtyOutputProcessor, MAX_PENDING_PTY_SIDE_EFFECTS } =
+        await import('./pty-transport')
+      const onTitleChange = vi.fn()
+      const onAgentStatus = vi.fn()
+      const onAgentBecameIdle = vi.fn()
+      const processor = createPtyOutputProcessor({
+        onTitleChange,
+        onAgentStatus,
+        onAgentBecameIdle
+      })
+      const callbacks = { onData: vi.fn() }
+
+      processor.processData('\x1b]0;. Claude working\x07', callbacks)
+      processor.processData('plain output', callbacks)
+      for (let index = 0; index < MAX_PENDING_PTY_SIDE_EFFECTS; index += 1) {
+        processor.processData(
+          `\x1b]9999;{"state":"working","prompt":"status-${index}"}\x07`,
+          callbacks
+        )
+      }
+      processor.flushPendingSideEffects()
+      vi.advanceTimersByTime(3_000)
+
+      expect(onTitleChange).toHaveBeenNthCalledWith(1, '. Claude working', '. Claude working')
+      expect(onTitleChange).toHaveBeenLastCalledWith('Claude', 'Claude')
+      expect(onAgentBecameIdle).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps ignored Cursor title scans through status-only overflow', async () => {
+    vi.useFakeTimers()
+    try {
+      const { createPtyOutputProcessor, MAX_PENDING_PTY_SIDE_EFFECTS } =
+        await import('./pty-transport')
+      const onTitleChange = vi.fn()
+      const onAgentStatus = vi.fn()
+      const processor = createPtyOutputProcessor({ onTitleChange, onAgentStatus })
+      const callbacks = { onData: vi.fn() }
+
+      processor.processData('\x1b]0;. Claude working\x07', callbacks)
+      processor.processData('\x1b]0;Cursor Agent\x07', callbacks)
+      for (let index = 0; index < MAX_PENDING_PTY_SIDE_EFFECTS; index += 1) {
+        processor.processData(
+          `\x1b]9999;{"state":"working","prompt":"status-${index}"}\x07`,
+          callbacks
+        )
+      }
+      processor.flushPendingSideEffects()
+      vi.advanceTimersByTime(3_000)
+
+      expect(onTitleChange).toHaveBeenCalledTimes(1)
+      expect(onTitleChange).toHaveBeenCalledWith('. Claude working', '. Claude working')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('still runs stale-title detection when an OSC status chunk has no title', async () => {
     vi.useFakeTimers()
     try {

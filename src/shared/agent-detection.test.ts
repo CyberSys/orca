@@ -67,6 +67,16 @@ describe('OSC title extraction', () => {
     expect(extractAllOscTitles(data)).toEqual([extracted])
   })
 
+  it('preserves exact UTF-16 code units when detaching titles', () => {
+    const title = `A\uD800B\uDC00\uD83D\uDE00`
+    const extracted = extractLastOscTitle(`\x1b]0;${title}\x07`)
+
+    expect(extracted).toBe(title)
+    expect(Array.from(extracted ?? '', (character) => character.codePointAt(0))).toEqual(
+      Array.from(title, (character) => character.codePointAt(0))
+    )
+  })
+
   it('retains only the newest titles when one chunk contains limit +1', () => {
     const data = Array.from(
       { length: MAX_OSC_TITLES_PER_CHUNK + 1 },

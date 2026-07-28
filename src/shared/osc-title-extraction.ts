@@ -58,17 +58,20 @@ function parseOscTitleAt(data: string, index: number): OscTitleParseResult {
 
 function readBoundedOscTitle(data: string, titleStart: number, titleEnd: number): string {
   // Why: PTY output can contain pasted or remote-controlled OSC titles; keep
-  // downstream title detection bounded while preserving trailing status words.
+  // downstream title detection bounded and detached from the raw chunk.
   const length = titleEnd - titleStart
-  if (length <= MAX_OSC_TITLE_CHARS) {
-    return data.slice(titleStart, titleEnd)
+  const retainedLength = Math.min(length, MAX_OSC_TITLE_CHARS)
+  const prefixLength =
+    length <= MAX_OSC_TITLE_CHARS ? retainedLength : Math.ceil(MAX_OSC_TITLE_CHARS / 2)
+  const suffixLength = retainedLength - prefixLength
+  const codeUnits = new Uint16Array(retainedLength)
+  for (let index = 0; index < prefixLength; index += 1) {
+    codeUnits[index] = data.charCodeAt(titleStart + index)
   }
-  const prefixLength = Math.ceil(MAX_OSC_TITLE_CHARS / 2)
-  const suffixLength = MAX_OSC_TITLE_CHARS - prefixLength
-  return (
-    data.slice(titleStart, titleStart + prefixLength) +
-    data.slice(titleEnd - suffixLength, titleEnd)
-  )
+  for (let index = 0; index < suffixLength; index += 1) {
+    codeUnits[prefixLength + index] = data.charCodeAt(titleEnd - suffixLength + index)
+  }
+  return String.fromCharCode(...codeUnits)
 }
 
 export function extractLastOscTitle(data: string): string | null {

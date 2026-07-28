@@ -105,6 +105,16 @@ type PendingPtySideEffect = {
   suppressAttentionEvents: boolean
 }
 
+type PendingEvictedTitle = {
+  title: string
+  suppressAttentionEvents: boolean
+}
+
+type PendingEvictedTitleScan = {
+  effect: Exclude<PendingPtySideEffect['titleScanEffect'], 'none'>
+  suppressAttentionEvents: boolean
+}
+
 function isIgnoredCursorNativeTitle(title: string): boolean {
   return title.trim().toLowerCase() === 'cursor agent'
 }
@@ -161,7 +171,11 @@ export function createPtyOutputProcessor({
   let sideEffectDrainTimer: ReturnType<typeof setTimeout> | null = null
   let pendingSideEffects: PendingPtySideEffect[] = []
   let pendingSideEffectIndex = 0
+  let pendingTitleCount = 0
+  let pendingTitleScanCount = 0
   let pendingWorkingTitleSideEffects = 0
+  let pendingEvictedTitle: PendingEvictedTitle | null = null
+  let pendingEvictedTitleScan: PendingEvictedTitleScan | null = null
   const agentTracker =
     onAgentBecameIdle || onAgentBecameWorking || onAgentExited
       ? createAgentStatusTracker(
@@ -211,17 +225,72 @@ export function createPtyOutputProcessor({
     sideEffectDrainTimer = setTimeout(drainPtySideEffects, 0)
   }
 
+  function clearPendingEvictedTitle(): void {
+    if (pendingEvictedTitle && isWorkingTitle(normalizeTerminalTitle(pendingEvictedTitle.title))) {
+      pendingWorkingTitleSideEffects -= 1
+      if (pendingWorkingTitleSideEffects < 0) {
+        pendingWorkingTitleSideEffects = 0
+      }
+    }
+    pendingEvictedTitle = null
+  }
+
+  function clearPendingEvictedTitleState(): void {
+    clearPendingEvictedTitle()
+    pendingEvictedTitleScan = null
+  }
+
+  function retainEvictedTitleState(evicted: PendingPtySideEffect): void {
+    const latestTitle = evicted.titles.at(-1)
+    if (latestTitle !== undefined) {
+      clearPendingEvictedTitleState()
+      if (pendingTitleCount === 0) {
+        pendingEvictedTitle = {
+          title: latestTitle,
+          suppressAttentionEvents: evicted.suppressAttentionEvents
+        }
+        if (isWorkingTitle(normalizeTerminalTitle(latestTitle))) {
+          pendingWorkingTitleSideEffects += 1
+        }
+      }
+    }
+    if (
+      evicted.titleScanEffect !== 'none' &&
+      pendingTitleCount === 0 &&
+      pendingTitleScanCount === 0
+    ) {
+      pendingEvictedTitleScan = {
+        effect: evicted.titleScanEffect,
+        suppressAttentionEvents: evicted.suppressAttentionEvents
+      }
+    }
+  }
+
+  function pendingSideEffectCount(): number {
+    return (
+      pendingSideEffects.length -
+      pendingSideEffectIndex +
+      Number(pendingEvictedTitle !== null) +
+      Number(pendingEvictedTitleScan !== null)
+    )
+  }
+
   function evictOldestPendingSideEffectsIfFull(): void {
-    while (pendingSideEffects.length - pendingSideEffectIndex >= MAX_PENDING_PTY_SIDE_EFFECTS) {
+    while (pendingSideEffectCount() >= MAX_PENDING_PTY_SIDE_EFFECTS) {
       const evicted = pendingSideEffects[pendingSideEffectIndex]
       if (!evicted) {
         return
       }
       pendingSideEffectIndex += 1
+      pendingTitleCount -= evicted.titles.length
+      if (evicted.titleScanEffect !== 'none') {
+        pendingTitleScanCount -= 1
+      }
       pendingWorkingTitleSideEffects -= countWorkingTitles(evicted.titles)
       if (pendingWorkingTitleSideEffects < 0) {
         pendingWorkingTitleSideEffects = 0
       }
+      retainEvictedTitleState(evicted)
       const survivor = pendingSideEffects[pendingSideEffectIndex]
       if (survivor) {
         survivor.containsBell ||= evicted.containsBell
@@ -239,6 +308,11 @@ export function createPtyOutputProcessor({
 
   function enqueuePtySideEffect(next: PendingPtySideEffect): void {
     const workingTitleCount = countWorkingTitles(next.titles)
+    if (next.titles.length > 0) {
+      clearPendingEvictedTitleState()
+    } else if (next.titleScanEffect !== 'none') {
+      pendingEvictedTitleScan = null
+    }
     const prior = pendingSideEffects.at(-1)
     if (
       prior &&
@@ -251,12 +325,26 @@ export function createPtyOutputProcessor({
       !next.containsBell
     ) {
       // Why: for adjacent no-op scans, only the latest event decides whether stale-title detection stays cleared or re-arms.
+      if (prior.titleScanEffect === 'none' && next.titleScanEffect !== 'none') {
+        pendingTitleScanCount += 1
+      } else if (prior.titleScanEffect !== 'none' && next.titleScanEffect === 'none') {
+        pendingTitleScanCount -= 1
+      }
       prior.titleScanEffect = next.titleScanEffect
       pendingWorkingTitleSideEffects += workingTitleCount
       return
     }
     evictOldestPendingSideEffectsIfFull()
+    if (next.titles.length > 0) {
+      clearPendingEvictedTitleState()
+    } else if (next.titleScanEffect !== 'none') {
+      pendingEvictedTitleScan = null
+    }
     pendingSideEffects.push(next)
+    pendingTitleCount += next.titles.length
+    if (next.titleScanEffect !== 'none') {
+      pendingTitleScanCount += 1
+    }
     pendingWorkingTitleSideEffects += workingTitleCount
   }
 
@@ -364,6 +452,10 @@ export function createPtyOutputProcessor({
   }
 
   function applyPtySideEffect(next: PendingPtySideEffect): void {
+    pendingTitleCount -= next.titles.length
+    if (next.titleScanEffect !== 'none') {
+      pendingTitleScanCount -= 1
+    }
     pendingWorkingTitleSideEffects -= countWorkingTitles(next.titles)
     if (pendingWorkingTitleSideEffects < 0) {
       pendingWorkingTitleSideEffects = 0
@@ -383,6 +475,18 @@ export function createPtyOutputProcessor({
     sideEffectDrainTimer = null
     const maxEffects = options.flushAll ? Number.POSITIVE_INFINITY : MAX_PTY_SIDE_EFFECTS_PER_DRAIN
     let processed = 0
+    if (pendingEvictedTitle && processed < maxEffects) {
+      const retained = pendingEvictedTitle
+      clearPendingEvictedTitle()
+      processObservedTitles([retained.title], 'none', retained.suppressAttentionEvents)
+      processed += 1
+    }
+    if (pendingEvictedTitleScan && processed < maxEffects) {
+      const retained = pendingEvictedTitleScan
+      pendingEvictedTitleScan = null
+      processObservedTitles([], retained.effect, retained.suppressAttentionEvents)
+      processed += 1
+    }
     while (pendingSideEffectIndex < pendingSideEffects.length && processed < maxEffects) {
       const next = pendingSideEffects[pendingSideEffectIndex]
       if (!next) {
@@ -393,7 +497,11 @@ export function createPtyOutputProcessor({
       applyPtySideEffect(next)
     }
     compactPendingSideEffectsIfNeeded(options.flushAll === true)
-    if (pendingSideEffectIndex < pendingSideEffects.length) {
+    if (
+      pendingEvictedTitle !== null ||
+      pendingEvictedTitleScan !== null ||
+      pendingSideEffectIndex < pendingSideEffects.length
+    ) {
       // Why: thousands of queued OSC facts can pile up under timer throttling; bound each drain so paint and terminal input run between batches.
       scheduleSideEffectDrain()
     }
@@ -478,7 +586,11 @@ export function createPtyOutputProcessor({
     clearSideEffectDrainTimer()
     pendingSideEffects.length = 0
     pendingSideEffectIndex = 0
+    pendingTitleCount = 0
+    pendingTitleScanCount = 0
     pendingWorkingTitleSideEffects = 0
+    pendingEvictedTitle = null
+    pendingEvictedTitleScan = null
     clearStaleTitleTimer()
     agentTracker?.reset()
     bellDetector.reset()
