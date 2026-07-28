@@ -157,11 +157,13 @@ export function deriveCheckStatus(rollup: unknown[] | null | undefined): CheckSt
 
     if (
       conclusion === 'FAILURE' ||
+      conclusion === 'ERROR' ||
       conclusion === 'TIMED_OUT' ||
       conclusion === 'CANCELLED' ||
       // Why: action_required (e.g. an unapproved workflow run) blocks merge until
       // someone acts; treat it as needs-attention rather than a silent pass.
       conclusion === 'ACTION_REQUIRED' ||
+      conclusion === 'STARTUP_FAILURE' ||
       state === 'FAILURE' ||
       state === 'ERROR'
     ) {
