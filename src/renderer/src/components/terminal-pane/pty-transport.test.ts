@@ -757,6 +757,62 @@ describe('createIpcPtyTransport', () => {
     }
   })
 
+  it('bounds deferred PTY side effects while the drain is stalled', async () => {
+    vi.useFakeTimers()
+    try {
+      const { createPtyOutputProcessor, MAX_PENDING_PTY_SIDE_EFFECTS } =
+        await import('./pty-transport')
+      const onTitleChange = vi.fn()
+      const onBell = vi.fn()
+      const processor = createPtyOutputProcessor({ onTitleChange, onBell })
+      const callbacks = { onData: vi.fn() }
+
+      processor.processData('\x07', callbacks)
+      for (let i = 0; i < MAX_PENDING_PTY_SIDE_EFFECTS * 4; i++) {
+        processor.processData(`\x1b]0;stalled-title-${i}\x07`, callbacks)
+      }
+      processor.pausePendingSideEffects()
+      processor.flushPendingSideEffects()
+
+      expect(onTitleChange).toHaveBeenCalledTimes(MAX_PENDING_PTY_SIDE_EFFECTS)
+      expect(onTitleChange).toHaveBeenLastCalledWith('stalled-title-2047', 'stalled-title-2047')
+      expect(onBell).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the newest agent statuses when bounding deferred PTY side effects', async () => {
+    vi.useFakeTimers()
+    try {
+      const {
+        createPtyOutputProcessor,
+        MAX_PENDING_PTY_SIDE_EFFECTS,
+        MAX_EVICTED_AGENT_STATUS_PAYLOAD_CARRY
+      } = await import('./pty-transport')
+      const onAgentStatus = vi.fn()
+      const processor = createPtyOutputProcessor({ onAgentStatus })
+      const callbacks = { onData: vi.fn() }
+      const total = MAX_PENDING_PTY_SIDE_EFFECTS * 2
+
+      for (let i = 0; i < total; i++) {
+        processor.processData(`\x1b]9999;{"state":"working","prompt":"status-${i}"}\x07`, callbacks)
+      }
+      processor.flushPendingSideEffects()
+
+      const delivered = onAgentStatus.mock.calls.map(([payload]) => payload.prompt)
+      expect(delivered.length).toBeLessThanOrEqual(
+        MAX_PENDING_PTY_SIDE_EFFECTS + MAX_EVICTED_AGENT_STATUS_PAYLOAD_CARRY
+      )
+      expect(delivered.at(-1)).toBe(`status-${total - 1}`)
+      expect(delivered).toEqual(
+        [...delivered].sort((a, b) => Number(a.slice(7)) - Number(b.slice(7)))
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('still runs stale-title detection when an OSC status chunk has no title', async () => {
     vi.useFakeTimers()
     try {

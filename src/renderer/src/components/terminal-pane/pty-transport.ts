@@ -69,6 +69,10 @@ const SSH_SESSION_EXPIRED_ERROR = 'SSH_SESSION_EXPIRED'
 const SSH_PTY_CONNECTION_MISMATCH_MARKER = 'belongs to SSH connection'
 const STALE_TITLE_TIMEOUT = 3000 // ms before stale working title is cleared
 const MAX_PTY_SIDE_EFFECTS_PER_DRAIN = 64
+// Why: background timer throttling can enqueue faster than the 64-item drain.
+export const MAX_PENDING_PTY_SIDE_EFFECTS = 512
+// Why: agent status is last-wins; preserve a small ordered tail through overflow.
+export const MAX_EVICTED_AGENT_STATUS_PAYLOAD_CARRY = 16
 
 type PtyOutputCallbacks = Parameters<PtyTransport['connect']>[0]['callbacks']
 
@@ -207,6 +211,32 @@ export function createPtyOutputProcessor({
     sideEffectDrainTimer = setTimeout(drainPtySideEffects, 0)
   }
 
+  function evictOldestPendingSideEffectsIfFull(): void {
+    while (pendingSideEffects.length - pendingSideEffectIndex >= MAX_PENDING_PTY_SIDE_EFFECTS) {
+      const evicted = pendingSideEffects[pendingSideEffectIndex]
+      if (!evicted) {
+        return
+      }
+      pendingSideEffectIndex += 1
+      pendingWorkingTitleSideEffects -= countWorkingTitles(evicted.titles)
+      if (pendingWorkingTitleSideEffects < 0) {
+        pendingWorkingTitleSideEffects = 0
+      }
+      const survivor = pendingSideEffects[pendingSideEffectIndex]
+      if (survivor) {
+        survivor.containsBell ||= evicted.containsBell
+        if (evicted.payloads.length > 0) {
+          const merged = evicted.payloads.concat(survivor.payloads)
+          survivor.payloads =
+            merged.length > MAX_EVICTED_AGENT_STATUS_PAYLOAD_CARRY
+              ? merged.slice(-MAX_EVICTED_AGENT_STATUS_PAYLOAD_CARRY)
+              : merged
+        }
+      }
+      compactPendingSideEffectsIfNeeded()
+    }
+  }
+
   function enqueuePtySideEffect(next: PendingPtySideEffect): void {
     const workingTitleCount = countWorkingTitles(next.titles)
     const prior = pendingSideEffects.at(-1)
@@ -225,6 +255,7 @@ export function createPtyOutputProcessor({
       pendingWorkingTitleSideEffects += workingTitleCount
       return
     }
+    evictOldestPendingSideEffectsIfFull()
     pendingSideEffects.push(next)
     pendingWorkingTitleSideEffects += workingTitleCount
   }
