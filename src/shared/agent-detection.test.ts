@@ -4,6 +4,7 @@ import {
   detectAgentStatusFromTitle,
   extractAllOscTitles,
   extractLastOscTitle,
+  extractNewestOscTitles,
   getAgentLabel,
   isCursorAgentTitle,
   MAX_OSC_TITLE_CHARS,
@@ -88,6 +89,18 @@ describe('OSC title extraction', () => {
     expect(titles).toHaveLength(MAX_OSC_TITLES_PER_CHUNK)
     expect(titles[0]).toBe('title-1')
     expect(titles.at(-1)).toBe(`title-${MAX_OSC_TITLES_PER_CHUNK}`)
+  })
+
+  it('detaches only the requested newest title tail', () => {
+    const data = Array.from(
+      { length: MAX_OSC_TITLES_PER_CHUNK },
+      (_, index) => `\x1b]0;title-${index}\x07`
+    ).join('')
+
+    expect(extractNewestOscTitles(data, 2)).toEqual([
+      `title-${MAX_OSC_TITLES_PER_CHUNK - 2}`,
+      `title-${MAX_OSC_TITLES_PER_CHUNK - 1}`
+    ])
   })
 })
 

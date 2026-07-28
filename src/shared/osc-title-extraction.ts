@@ -8,9 +8,14 @@ export const MAX_OSC_TITLE_CHARS = 1024
 export const MAX_OSC_TITLES_PER_CHUNK = 4096
 
 type OscTitleParseResult =
-  | { kind: 'title'; title: string; nextIndex: number }
+  | { kind: 'title'; titleStart: number; titleEnd: number; nextIndex: number }
   | { kind: 'invalid'; nextIndex: number }
   | { kind: 'incomplete' }
+
+type OscTitleBounds = {
+  titleStart: number
+  titleEnd: number
+}
 
 function isOscIntroducerAt(data: string, index: number): boolean {
   return (
@@ -36,7 +41,8 @@ function parseOscTitleAt(data: string, index: number): OscTitleParseResult {
     if (code === BEL_CODE_UNIT) {
       return {
         kind: 'title',
-        title: readBoundedOscTitle(data, titleStart, cursor),
+        titleStart,
+        titleEnd: cursor,
         nextIndex: cursor + 1
       }
     }
@@ -46,7 +52,8 @@ function parseOscTitleAt(data: string, index: number): OscTitleParseResult {
     if (data.charCodeAt(cursor + 1) === BACKSLASH_CODE_UNIT) {
       return {
         kind: 'title',
-        title: readBoundedOscTitle(data, titleStart, cursor),
+        titleStart,
+        titleEnd: cursor,
         nextIndex: cursor + 2
       }
     }
@@ -79,7 +86,7 @@ export function extractLastOscTitle(data: string): string | null {
     return null
   }
 
-  let last: string | null = null
+  let last: OscTitleBounds | null = null
   let searchStart = 0
   // Why: raw PTY chunks can include large pasted content. Parse OSC titles
   // directly instead of running a global regex over the whole chunk.
@@ -93,21 +100,32 @@ export function extractLastOscTitle(data: string): string | null {
       break
     }
     if (parsed.kind === 'title') {
-      last = parsed.title
+      last = { titleStart: parsed.titleStart, titleEnd: parsed.titleEnd }
       searchStart = parsed.nextIndex
       continue
     }
     searchStart = parsed.nextIndex
   }
-  return last
+  return last ? readBoundedOscTitle(data, last.titleStart, last.titleEnd) : null
 }
 
 export function extractAllOscTitles(data: string): string[] {
+  return extractNewestOscTitles(data, MAX_OSC_TITLES_PER_CHUNK)
+}
+
+export function extractNewestOscTitles(data: string, maxTitles: number): string[] {
   if (!data.includes('\x1b]')) {
     return []
   }
 
-  const titles: string[] = []
+  const limit = Number.isFinite(maxTitles)
+    ? Math.max(0, Math.min(MAX_OSC_TITLES_PER_CHUNK, Math.trunc(maxTitles)))
+    : 0
+  if (limit === 0) {
+    return []
+  }
+
+  const titles: OscTitleBounds[] = []
   let oldestTitleIndex = 0
   let searchStart = 0
   while (searchStart < data.length) {
@@ -120,18 +138,21 @@ export function extractAllOscTitles(data: string): string[] {
       break
     }
     if (parsed.kind === 'title') {
-      if (titles.length < MAX_OSC_TITLES_PER_CHUNK) {
-        titles.push(parsed.title)
+      const bounds = { titleStart: parsed.titleStart, titleEnd: parsed.titleEnd }
+      if (titles.length < limit) {
+        titles.push(bounds)
       } else {
-        titles[oldestTitleIndex] = parsed.title
-        oldestTitleIndex = (oldestTitleIndex + 1) % MAX_OSC_TITLES_PER_CHUNK
+        titles[oldestTitleIndex] = bounds
+        oldestTitleIndex = (oldestTitleIndex + 1) % limit
       }
       searchStart = parsed.nextIndex
       continue
     }
     searchStart = parsed.nextIndex
   }
-  return oldestTitleIndex === 0
-    ? titles
-    : [...titles.slice(oldestTitleIndex), ...titles.slice(0, oldestTitleIndex)]
+  const ordered =
+    oldestTitleIndex === 0
+      ? titles
+      : [...titles.slice(oldestTitleIndex), ...titles.slice(0, oldestTitleIndex)]
+  return ordered.map(({ titleStart, titleEnd }) => readBoundedOscTitle(data, titleStart, titleEnd))
 }

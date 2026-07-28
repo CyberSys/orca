@@ -4,7 +4,7 @@ import {
   clearWorkingIndicators,
   createAgentStatusTracker,
   normalizeTerminalTitle,
-  extractAllOscTitles
+  extractNewestOscTitles
 } from '../../../../shared/agent-detection'
 import {
   isTerminalInputTooLargeWithDeferredMeasurement,
@@ -354,7 +354,9 @@ export function createPtyOutputProcessor({
     suppressAttentionEvents: boolean
   ): void {
     const scannedForTitles = Boolean(onTitleChange && data.includes('\x1b]'))
-    const titles = scannedForTitles ? extractAllOscTitles(data) : []
+    const titles = scannedForTitles
+      ? extractNewestOscTitles(data, MAX_PENDING_PTY_SIDE_EFFECTS)
+      : []
     // Why: Cursor emits this ignored title every redraw; keep one queue fact instead of an allocation and drain slot per frame.
     const ignoredCursorNativeTitle = removeIgnoredCursorNativeTitles(titles)
     const deliveredPayloads =

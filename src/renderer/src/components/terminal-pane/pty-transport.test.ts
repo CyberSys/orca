@@ -782,6 +782,38 @@ describe('createIpcPtyTransport', () => {
     }
   })
 
+  it('detaches only the newest bounded title tail from one PTY chunk', async () => {
+    vi.useFakeTimers()
+    try {
+      const { createPtyOutputProcessor, MAX_PENDING_PTY_SIDE_EFFECTS } =
+        await import('./pty-transport')
+      const onTitleChange = vi.fn()
+      const processor = createPtyOutputProcessor({ onTitleChange })
+      const callbacks = { onData: vi.fn() }
+      const total = MAX_PENDING_PTY_SIDE_EFFECTS * 8
+      const data = Array.from(
+        { length: total },
+        (_, index) => `\x1b]0;chunk-title-${index}\x07`
+      ).join('')
+
+      processor.processData(data, callbacks)
+      processor.flushPendingSideEffects()
+
+      expect(onTitleChange).toHaveBeenCalledTimes(MAX_PENDING_PTY_SIDE_EFFECTS)
+      expect(onTitleChange).toHaveBeenNthCalledWith(
+        1,
+        `chunk-title-${total - MAX_PENDING_PTY_SIDE_EFFECTS}`,
+        `chunk-title-${total - MAX_PENDING_PTY_SIDE_EFFECTS}`
+      )
+      expect(onTitleChange).toHaveBeenLastCalledWith(
+        `chunk-title-${total - 1}`,
+        `chunk-title-${total - 1}`
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the newest agent statuses when bounding deferred PTY side effects', async () => {
     vi.useFakeTimers()
     try {
