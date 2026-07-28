@@ -62,6 +62,9 @@ describe('terminal IME e2e workflow', () => {
     expect(runner).toContain("['initial-input-mode', 'hangul']")
     expect(runner).toContain("['hangul-keyboard', '2']")
     expect(runner).toContain("process.kill(-processGroupId, 'SIGTERM')")
+    expect(runner).toMatch(
+      /'test:e2e:headful',\s*'--workers=1',\s*'--',\s*'tests\/e2e\/terminal-ibus-hangul-native\.spec\.ts'/
+    )
     expect(runner).not.toContain("'--replace'")
     expect(runner).not.toContain('killall')
     expect(runner).not.toContain('pkill')

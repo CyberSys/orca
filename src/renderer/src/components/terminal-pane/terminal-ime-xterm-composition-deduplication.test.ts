@@ -235,6 +235,31 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
+  it.each([
+    ['日本', '本'],
+    ['가나다', '다'],
+    ['🇰🇷', '🇰'],
+    ['👩‍💻', '💻'],
+    ['가', '가'],
+    ['👍🏽', '👍🏽'],
+    ['e\u0301', '\u0301'],
+    ['中文', '文'],
+    ['한', 'a'],
+    ['a', 'a']
+  ])('keeps immediately-following %s then %s input distinct', async (composition, following) => {
+    const { emitted, terminal, textarea } = openTerminal()
+    startComposition(textarea, composition)
+    await nextEventLoop()
+
+    dispatchCompositionEvent(textarea, 'compositionend', composition)
+    textarea.value = `${composition}${following}`
+    dispatchComposedInput(textarea, { data: following, inputType: 'insertText' })
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe(`${composition}${following}`)
+    terminal.dispose()
+  })
+
   it('emits repeated Korean insertText within one composition exactly twice', async () => {
     const { emitted, terminal, textarea } = openTerminal()
     startComposition(textarea, '가가')
@@ -270,12 +295,14 @@ describe('xterm IME composition de-duplication', () => {
     await nextEventLoop()
     dispatchCompositionEvent(textarea, 'compositionend', composition)
     const endsWith = vi.spyOn(String.prototype, 'endsWith')
+    const startsWith = vi.spyOn(String.prototype, 'startsWith')
 
     expect(getCompositionHelper(terminal).keypress(following)).toBe(false)
     await nextEventLoop()
 
     expect(emitted.join('')).toBe(composition)
-    expect(endsWith.mock.calls.length).toBeLessThan(10)
+    expect(endsWith).not.toHaveBeenCalled()
+    expect(startsWith).not.toHaveBeenCalled()
     terminal.dispose()
   })
 
@@ -435,6 +462,24 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
+  it('keeps matching text when a new composition restarts immediately', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+    startComposition(textarea, '日本')
+    await nextEventLoop()
+    dispatchCompositionEvent(textarea, 'compositionend', '日本')
+
+    textarea.setSelectionRange(2, 2)
+    dispatchCompositionEvent(textarea, 'compositionstart')
+    dispatchCompositionEvent(textarea, 'compositionupdate', '本')
+    textarea.value = '日本本'
+    textarea.setSelectionRange(3, 3)
+    dispatchCompositionEvent(textarea, 'compositionend', '本')
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe('日本本')
+    terminal.dispose()
+  })
+
   it('flushes a pending commit before blur clears the textarea', async () => {
     const { emitted, terminal, textarea } = openTerminal()
     terminal.focus()
@@ -484,13 +529,13 @@ describe('xterm IME composition de-duplication', () => {
     const compositionHelper = (
       terminal as unknown as {
         _core: {
-          _compositionHelper: { _pendingComposition?: { claimedKeypress: boolean } }
+          _compositionHelper: { _pendingComposition?: { keypressData: string } }
         }
       }
     )._core._compositionHelper
     expect(compositionHelper._pendingComposition).toBeDefined()
     dispatchKeypress(textarea, '한')
-    expect(compositionHelper._pendingComposition?.claimedKeypress).toBe(true)
+    expect(compositionHelper._pendingComposition?.keypressData).toBe('한')
     expect(emitted).toEqual([])
     textarea.value = '한'
     textarea.dispatchEvent(
@@ -502,7 +547,7 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
-  it('preserves composition-first order when keypress overlaps its suffix', async () => {
+  it('keeps a following keypress even when it matches the composition suffix', async () => {
     const { emitted, terminal, textarea } = openTerminal()
     startComposition(textarea, '가한')
     await nextEventLoop()
@@ -511,7 +556,7 @@ describe('xterm IME composition de-duplication', () => {
     dispatchKeypress(textarea, '한')
     await nextEventLoop()
 
-    expect(emitted.join('')).toBe('가한')
+    expect(emitted.join('')).toBe('가한한')
     terminal.dispose()
   })
 
@@ -530,7 +575,7 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
-  it('does not repeat keypress contained before propagated composition text', async () => {
+  it('keeps a following keypress even when it matches the composition prefix', async () => {
     const { emitted, terminal, textarea } = openTerminal()
     startComposition(textarea, '한')
     await nextEventLoop()
@@ -541,11 +586,11 @@ describe('xterm IME composition de-duplication', () => {
     dispatchKeypress(textarea, '한')
     await nextEventLoop()
 
-    expect(emitted.join('')).toBe('한a')
+    expect(emitted.join('')).toBe('한a한')
     terminal.dispose()
   })
 
-  it('merges multiple deferred keypresses with partial textarea overlap', async () => {
+  it('preserves multiple keypresses when textarea propagation is partial', async () => {
     const { emitted, terminal, textarea } = openTerminal()
     startComposition(textarea, '한')
     await nextEventLoop()
