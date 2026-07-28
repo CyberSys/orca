@@ -1525,7 +1525,9 @@ export default function WorktreeJumpPalette(): React.JSX.Element | null {
         closeModal()
         // Why: #9939 — jumping to an already-open workspace must focus its own terminal.
         const activation = activateAndRevealWorktree(activeMatch.id)
-        queueWorkspaceActivationTerminalFocus(activeMatch.id, activation)
+        if (!queueWorkspaceActivationTerminalFocus(activeMatch.id, activation)) {
+          focusFallbackSurface()
+        }
         recordFeatureInteraction('cmd-j-workspace-open')
         return
       }
@@ -1554,7 +1556,9 @@ export default function WorktreeJumpPalette(): React.JSX.Element | null {
         closeModal()
         // Why: #9939 — jumping to an already-open workspace must focus its own terminal.
         const activation = activateAndRevealWorktree(activeMatch.id)
-        queueWorkspaceActivationTerminalFocus(activeMatch.id, activation)
+        if (!queueWorkspaceActivationTerminalFocus(activeMatch.id, activation)) {
+          focusFallbackSurface()
+        }
         recordFeatureInteraction('cmd-j-workspace-open')
         return
       }
@@ -1628,6 +1632,7 @@ export default function WorktreeJumpPalette(): React.JSX.Element | null {
     closeModal,
     createLookupGuard,
     createWorktreeName,
+    focusFallbackSurface,
     openModal,
     prefetchCreateWorkspaceBaseForComposer,
     recordFeatureInteraction,

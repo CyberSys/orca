@@ -325,6 +325,7 @@ function buildAgentResumeInvocation(
     // Why: Kimi Code resumes with `kimi --session <id>` (alias `-S`). Sessions
     // are work-dir-scoped, so the cwd prefix from buildAiVaultResumeCommand is
     // required — resuming from another directory is rejected by the CLI.
+    // falls through
     case 'kimi':
       return `${baseCommand} --session ${sessionArg}`
     case 'copilot':
@@ -339,6 +340,7 @@ function buildAgentResumeInvocation(
     case 'droid':
     // Why: OMP resumes by absolute transcript path (see buildAiVaultResumeCommand),
     // but the `--resume <arg>` invocation form is identical to the others here.
+    // falls through
     case 'omp':
       return `${baseCommand} --resume ${sessionArg}`
     case 'antigravity':

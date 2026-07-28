@@ -1035,6 +1035,11 @@ export type BrowserCookieImportSummary = {
   importedCookies: number
   skippedCookies: number
   domains: string[]
+  warning?: {
+    code: 'restart-fallback-unavailable'
+    loadedCookies: number
+    failedCookies: number
+  }
 }
 
 export type BrowserCookieImportResult =
@@ -2340,9 +2345,12 @@ export type ChangelogData = {
 export type UpdateCheckOptions = {
   includePrerelease?: boolean
   includePerfPrerelease?: boolean
+  localBuild?: boolean
 }
 
-export type UpdateStatus =
+export type UpdateSource = 'local'
+
+export type UpdateStatus = (
   | { state: 'idle' }
   | { state: 'checking'; userInitiated?: boolean }
   | {
@@ -2365,6 +2373,7 @@ export type UpdateStatus =
   | { state: 'downloading'; percent: number; version: string; activeNudgeId?: string }
   | { state: 'downloaded'; version: string; releaseUrl?: string; activeNudgeId?: string }
   | { state: 'error'; message: string; userInitiated?: boolean; activeNudgeId?: string }
+) & { source?: UpdateSource }
 
 // ─── Settings ────────────────────────────────────────────────────────
 export type NotificationSettings = {

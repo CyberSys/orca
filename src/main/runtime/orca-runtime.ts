@@ -184,7 +184,20 @@ import type {
   TuiAgent,
   WorkspaceCreateTelemetrySource,
   WorkspaceSessionState,
-  DirEntry
+  DirEntry,
+  GitHubIssueUpdate,
+  GitHubPullRequestStateUpdate,
+  GitHubPRFile,
+  GitHubPRReviewCommentInput,
+  GitLabIssueUpdate,
+  GitLabMRInlineCommentInput,
+  GitLabProjectRef,
+  GitLabWorkItem,
+  ListWorkItemsResult,
+  MRListState,
+  PRRefreshOutcome,
+  ClaudeRateLimitAccountsState,
+  CodexRateLimitAccountsState
 } from '../../shared/types'
 import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
 import {
@@ -237,7 +250,65 @@ import type {
 } from '../../shared/linear-agent-access'
 import {
   HEADLESS_RUNTIME_WINDOW_ID,
-  type RuntimeDesktopWindowStatus
+  type RuntimeDesktopWindowStatus,
+  type RuntimeGraphStatus,
+  type RuntimeRepoSearchRefs,
+  type RuntimeTerminalRead,
+  type RuntimeTerminalRename,
+  type RuntimeTerminalAgentStatus,
+  type RuntimeTerminalSend,
+  type RuntimeTerminalCreate,
+  type RuntimeTerminalPresentation,
+  type RuntimeTerminalSplit,
+  type RuntimeTerminalFocus,
+  type RuntimeTerminalClose,
+  type RuntimeTerminalListResult,
+  type RuntimeTerminalOrphanAdoptionRequest,
+  type RuntimeTerminalOrphanAdoptionResult,
+  type RuntimeWorktreeTerminalSleepResult,
+  type RuntimeTerminalResolvePane,
+  type RuntimeTerminalState,
+  type RuntimeStatus,
+  type RuntimeSyncWindowGraphResult,
+  type RuntimeTerminalWait,
+  type RuntimeTerminalWaitBlockedReason,
+  type RuntimeTerminalWaitCondition,
+  type RuntimeWorktreePsSummary,
+  type RuntimeWorktreeAgentRow,
+  type RuntimeWorktreeStatus,
+  type RuntimeSpeechModelSummary,
+  type RuntimeSpeechSetupState,
+  type RuntimeTerminalShow,
+  type RuntimeTerminalSummary,
+  type RuntimeTerminalVisualGroupNode,
+  type RuntimeTerminalVisualLayout,
+  type RuntimeTerminalVisualLayoutNode,
+  type RuntimeTerminalVisualPaneNode,
+  type RuntimeTerminalVisualTab,
+  type RuntimeSyncedLeaf,
+  type RuntimeSyncedTab,
+  type RuntimeMarkdownReadTabResult,
+  type RuntimeMarkdownSaveTabResult,
+  type RuntimeMobileSessionCreateTerminalResult,
+  type RuntimeMobileSessionClientTab,
+  type RuntimeMobileSessionTabCloseResult,
+  type RuntimeMobileSessionMarkdownTab,
+  type RuntimeMobileSessionTabMove,
+  type RuntimeMobileSessionTabMoveResult,
+  type RuntimeMobileSessionTabGroup,
+  type RuntimeMobileSessionSnapshotTab,
+  type RuntimeMobileSessionTerminalTab,
+  type RuntimeMobileSessionBrowserTab,
+  type RuntimeMobileSessionTabsRemovedResult,
+  type RuntimeMobileSessionTabsResult,
+  type RuntimeMobileSessionTabsSnapshot,
+  type RuntimeSessionTabCloseReason,
+  type RuntimeBrowserDriverState,
+  type RuntimeTerminalDriverState,
+  type RuntimeSyncWindowGraph,
+  type RuntimeWorktreeListResult,
+  type BrowserTabInfo,
+  type BrowserScreencastResult
 } from '../../shared/runtime-types'
 import {
   LINEAR_SEARCH_MAX_LIMIT,
@@ -377,66 +448,6 @@ import {
   scanWorkspacePortProbes
 } from '../ports/workspace-port-ownership'
 import { advertisedUrlWatcher } from '../ports/advertised-url-watcher'
-import type {
-  RuntimeGraphStatus,
-  RuntimeRepoSearchRefs,
-  RuntimeTerminalRead,
-  RuntimeTerminalRename,
-  RuntimeTerminalAgentStatus,
-  RuntimeTerminalSend,
-  RuntimeTerminalCreate,
-  RuntimeTerminalPresentation,
-  RuntimeTerminalSplit,
-  RuntimeTerminalFocus,
-  RuntimeTerminalClose,
-  RuntimeTerminalListResult,
-  RuntimeTerminalOrphanAdoptionRequest,
-  RuntimeTerminalOrphanAdoptionResult,
-  RuntimeWorktreeTerminalSleepResult,
-  RuntimeTerminalResolvePane,
-  RuntimeTerminalState,
-  RuntimeStatus,
-  RuntimeSyncWindowGraphResult,
-  RuntimeTerminalWait,
-  RuntimeTerminalWaitBlockedReason,
-  RuntimeTerminalWaitCondition,
-  RuntimeWorktreePsSummary,
-  RuntimeWorktreeAgentRow,
-  RuntimeWorktreeStatus,
-  RuntimeSpeechModelSummary,
-  RuntimeSpeechSetupState,
-  RuntimeTerminalShow,
-  RuntimeTerminalSummary,
-  RuntimeTerminalVisualGroupNode,
-  RuntimeTerminalVisualLayout,
-  RuntimeTerminalVisualLayoutNode,
-  RuntimeTerminalVisualPaneNode,
-  RuntimeTerminalVisualTab,
-  RuntimeSyncedLeaf,
-  RuntimeSyncedTab,
-  RuntimeMarkdownReadTabResult,
-  RuntimeMarkdownSaveTabResult,
-  RuntimeMobileSessionCreateTerminalResult,
-  RuntimeMobileSessionClientTab,
-  RuntimeMobileSessionTabCloseResult,
-  RuntimeMobileSessionMarkdownTab,
-  RuntimeMobileSessionTabMove,
-  RuntimeMobileSessionTabMoveResult,
-  RuntimeMobileSessionTabGroup,
-  RuntimeMobileSessionSnapshotTab,
-  RuntimeMobileSessionTerminalTab,
-  RuntimeMobileSessionBrowserTab,
-  RuntimeMobileSessionTabsRemovedResult,
-  RuntimeMobileSessionTabsResult,
-  RuntimeMobileSessionTabsSnapshot,
-  RuntimeSessionTabCloseReason,
-  RuntimeBrowserDriverState,
-  RuntimeTerminalDriverState,
-  RuntimeSyncWindowGraph,
-  RuntimeWorktreeListResult,
-  BrowserTabInfo,
-  BrowserScreencastResult
-} from '../../shared/runtime-types'
 import type { AutomationService } from '../automations/service'
 import { RuntimeBrowserCommands } from './orca-runtime-browser'
 import { RemoteRuntimeTerminalCreateIdempotency } from './remote-runtime-terminal-create-idempotency'
@@ -474,7 +485,13 @@ import {
   deriveClientSessionTabSelection,
   projectClientSessionTabSelection
 } from './client-session-tab-selection'
-import type { PtyProviderBufferSnapshot } from '../providers/types'
+import type {
+  PtyProviderBufferSnapshot,
+  IFilesystemProvider,
+  IPtyProvider,
+  PtyProcessInfo,
+  PtyTransientFact
+} from '../providers/types'
 import { ClaudeAgentTeamsService } from './claude-agent-teams-service'
 import type {
   AgentTeamsTmuxCompatRequest,
@@ -527,9 +544,9 @@ import {
   addPRReviewCommentReply,
   listLabels,
   listAssignableUsers,
-  type MainWorkItem
+  type MainWorkItem,
+  type GitHubPRBranchLookupOptions
 } from '../github/client'
-import type { GitHubPRBranchLookupOptions } from '../github/client'
 import { resolveGitHubPrStartPoint } from '../github/pr-start-point'
 import {
   fetchGitHubPullRequestHeadRef,
@@ -579,19 +596,6 @@ import {
   type GitLabIssueListState
 } from '../gitlab/gitlab-preload-args'
 import { recordGitLabProjectRecent } from '../gitlab/gitlab-project-recents'
-import type {
-  GitHubIssueUpdate,
-  GitHubPullRequestStateUpdate,
-  GitHubPRFile,
-  GitHubPRReviewCommentInput,
-  GitLabIssueUpdate,
-  GitLabMRInlineCommentInput,
-  GitLabProjectRef,
-  GitLabWorkItem,
-  ListWorkItemsResult,
-  MRListState,
-  PRRefreshOutcome
-} from '../../shared/types'
 import { inspectSetupScriptImportCandidates } from '../../shared/setup-script-imports'
 import type {
   CreateHostedReviewInput,
@@ -785,7 +789,7 @@ import {
   removeWorktree
 } from '../git/worktree'
 import type { AddWorktreeOptions, AddWorktreeResult } from '../git/worktree'
-import { isENOENT } from '../ipc/filesystem-auth'
+import { isENOENT, invalidateAuthorizedRootsCache } from '../ipc/filesystem-auth'
 import {
   createSetupRunnerScript,
   getDefaultTabCommandTrustContent,
@@ -862,7 +866,6 @@ import {
   UNREGISTERED_MISSING_WORKTREE_MESSAGE
 } from '../worktree-removal-safety'
 import { prefetchWorktreeCreateBase } from '../worktree-create-base-prefetch'
-import { invalidateAuthorizedRootsCache } from '../ipc/filesystem-auth'
 import { prepareLocalWorktreeRootForRepo } from '../worktree-root-preparation'
 import {
   closeLocalWatcherForWorktreePath,
@@ -894,12 +897,6 @@ import {
   createMobileSessionTabsNotifyCoalescer,
   type MobileSessionTabsNotifyCoalescer
 } from './mobile-session-tabs-notify-coalescer'
-import type {
-  IFilesystemProvider,
-  IPtyProvider,
-  PtyProcessInfo,
-  PtyTransientFact
-} from '../providers/types'
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import {
   assertFolderWorkspacePathUsable,
@@ -922,7 +919,6 @@ import type {
 } from '../codex-accounts/service'
 import type { CodexAccountSelectionTarget } from '../codex-accounts/runtime-selection'
 import type { RateLimitService } from '../rate-limits/service'
-import type { ClaudeRateLimitAccountsState, CodexRateLimitAccountsState } from '../../shared/types'
 import { applyPRBotAuthorOverride } from '../../shared/pr-bot-author-overrides'
 import type { CodexRateLimitResetOutcome, RateLimitState } from '../../shared/rate-limit-types'
 import type { CodexResetCreditExpectedScope } from '../../shared/codex-reset-credit-scope'
@@ -1823,6 +1819,19 @@ function runtimeRepoMatchesExecutionHost(
   return repo.connectionId == null
 }
 
+// Why: this runtime only has local git and local fs, so an ssh: host here would clone and
+// probe the wrong machine and then register the result as remote. SSH setup is owned by the
+// desktop IPC path (addRemoteRepoFromPath / cloneRemoteRepo), which the renderer routes to;
+// only `local` and `runtime:` legitimately reach these RPCs.
+function assertProjectHostSetupHostIsSupported(hostId: ExecutionHostId | null | undefined): void {
+  if (parseExecutionHostId(hostId)?.kind !== 'ssh') {
+    return
+  }
+  throw new Error(
+    'SSH hosts are not supported by this operation. Set the project up from the Orca desktop app, which owns the SSH connection.'
+  )
+}
+
 function getRuntimeFolderWorkspaceInstanceId(repo: Repo, instanceId: string): string {
   return `${getRuntimeFolderWorkspaceRootId(repo)}${FOLDER_WORKSPACE_INSTANCE_SEPARATOR}${instanceId}`
 }
@@ -2374,6 +2383,7 @@ export type MobileNotificationDispatchEvent = {
   worktreeId?: string
   notificationId?: string
   notificationSeq?: number
+  notificationEpoch?: string
 }
 
 export type RuntimeWorktreeLifecycleEvent =
@@ -2384,6 +2394,7 @@ export type MobileNotificationDismissEvent = {
   type: 'dismiss'
   notificationId: string
   notificationSeq?: number
+  notificationEpoch?: string
 }
 
 export type MobileNotificationEvent =
@@ -7389,6 +7400,11 @@ export class OrcaRuntimeService {
     listener: (snapshot: RuntimeMobileSessionTabsResult) => void,
     clientNavigationId?: string
   ): () => void {
+    // Why: a notify coalesced before this subscriber existed is already folded
+    // into the initial snapshot it was just sent. Draining it here — before the
+    // listener joins — keeps that pending timer from landing as a redundant
+    // `updated` frame carrying pre-subscribe state. Mirrors the unsubscribe flush.
+    this.mobileSessionTabsNotifyCoalescer.flushAll()
     const subscription = { listener, clientNavigationId }
     this.mobileSessionTabListeners.add(subscription)
     return () => {
@@ -8062,7 +8078,12 @@ export class OrcaRuntimeService {
    *  facts itself and the delivered bytes may be gapped — feeding them to
    *  main's transient scanners would mint phantom or duplicate facts. Title
    *  processing stays main-side either way. */
-  setPtyTransientFactDelegation(ptyId: string, delegated: boolean, scanSeedAnsi?: string): void {
+  setPtyTransientFactDelegation(
+    ptyId: string,
+    delegated: boolean,
+    scanSeedAnsi?: string,
+    mode2031PendingSubscribe?: true
+  ): void {
     const entry = this.getOrCreatePtyTitleTrackerEntry(ptyId)
     entry.tracker.setTransientFactScanningSuppressed(delegated)
     if (!delegated && scanSeedAnsi) {
@@ -8070,7 +8091,10 @@ export class OrcaRuntimeService {
       // incomplete escape at the handoff position — a sequence split across
       // the un-background toggle must not mint a phantom bell or lose its
       // fact. titleScanData:'' keeps titles out (they were never suppressed).
-      entry.tracker.handleChunk(scanSeedAnsi, { titleScanData: '' })
+      entry.tracker.handleChunk(scanSeedAnsi, {
+        titleScanData: '',
+        mode2031PendingSubscribe
+      })
     }
   }
 
@@ -8093,6 +8117,9 @@ export class OrcaRuntimeService {
         return
       case '2031-subscribe':
         this.recordTerminalSideEffectFact(ptyId, { kind: '2031-subscribe' })
+        return
+      case '2031-unsubscribe':
+        this.recordTerminalSideEffectFact(ptyId, { kind: '2031-unsubscribe' })
     }
   }
 
@@ -8340,6 +8367,12 @@ export class OrcaRuntimeService {
               // still sent by the renderer (query authority stays with the view).
               onMode2031Subscribe: () => {
                 this.recordTerminalSideEffectFact(ptyId, { kind: '2031-subscribe' })
+              },
+              // Why: the gated view never sees the withdrawal bytes either, so the
+              // subscription registry it keeps for theme flips needs this fact to
+              // stay truthful.
+              onMode2031Unsubscribe: () => {
+                this.recordTerminalSideEffectFact(ptyId, { kind: '2031-unsubscribe' })
               }
             }
           : {})
@@ -10190,7 +10223,12 @@ export class OrcaRuntimeService {
     // delivered and feed it back to getMissedSince on reconnect (idempotent catch-up, no dupes).
     notifyRuntimeListeners(
       this.notificationListeners,
-      (listener) => listener({ ...event, notificationSeq: seq }),
+      (listener) =>
+        listener({
+          ...event,
+          notificationSeq: seq,
+          notificationEpoch: this.mobileNotificationReplay.epoch
+        }),
       'mobile-notification'
     )
   }
@@ -10198,8 +10236,15 @@ export class OrcaRuntimeService {
   // Returns notifications dispatched after lastSeenSeq. Idempotent: the same
   // watermark always yields the same set, so a client cannot be re-pushed an
   // already-delivered event (the adversarial-review gate for #8129).
-  getMissedNotificationsSince(lastSeenSeq: number): ReplayableMobileNotification[] {
-    return this.mobileNotificationReplay.getMissedSince(lastSeenSeq)
+  getMissedNotificationsSince(lastSeenSeq: number, epoch?: string): ReplayableMobileNotification[] {
+    return this.mobileNotificationReplay.getMissedSince(lastSeenSeq, epoch)
+  }
+
+  // Why (#8591): the seq counter is per-process and restarts at 0 on every desktop
+  // launch, but the client's watermark is persisted. Clients need the epoch to tell
+  // a stale watermark from a valid one — see MobileNotificationReplayBuffer.
+  getMobileNotificationEpoch(): string {
+    return this.mobileNotificationReplay.epoch
   }
 
   dismissMobileNotification(notificationId: string): void {
@@ -15309,6 +15354,7 @@ export class OrcaRuntimeService {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }
+    assertProjectHostSetupHostIsSupported(args.hostId)
     let repo = await this.addRepo(args.path, args.kind === 'folder' ? 'folder' : 'git', args.hostId)
     let setup = getProjectHostSetupForRepo(this.listProjectHostSetups(), repo)
     if (setup.projectId !== args.projectId) {
@@ -15351,6 +15397,8 @@ export class OrcaRuntimeService {
   }
 
   async setupProjectClone(args: ProjectHostSetupCloneArgs): Promise<ProjectHostSetupResult> {
+    // Why: guard before cloneRepo, which would otherwise clone to the local disk.
+    assertProjectHostSetupHostIsSupported(args.hostId)
     const repo = await this.cloneRepo(args.url, args.destination, args.hostId)
     return await this.setupProjectExistingFolder({
       projectId: args.projectId,

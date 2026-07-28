@@ -21,7 +21,15 @@ import type {
 } from '../shared/agent-session-resume'
 import type { MobileRelayStatus } from '../shared/mobile-relay-status'
 import type { MobilePairingConnectionMode } from '../shared/mobile-pairing-connection-mode'
-import type { SshMutationExpectation } from '../shared/ssh-types'
+import type {
+  SshMutationExpectation,
+  SshConnectionState,
+  SshConfigImportResult,
+  SshTargetAddResult,
+  SshTarget,
+  PortForwardEntry,
+  EnrichedDetectedPort
+} from '../shared/ssh-types'
 import type {
   PluginPanelActionOutcome,
   PluginPanelEntry
@@ -93,7 +101,11 @@ import type {
   ShellOpenLocalPathResult
 } from '../shared/shell-open-types'
 import type { SkillDiscoveryResult, SkillDiscoveryTarget } from '../shared/skills'
-import type { SkillFreshnessInventory } from '../shared/skill-freshness'
+import type {
+  SkillFreshnessInventory,
+  SkillUpdateRun,
+  SkillUpdateStartResult
+} from '../shared/skill-freshness'
 import type {
   RuntimeBrowserDriverState,
   RuntimeMobileSessionTabMove,
@@ -155,14 +167,6 @@ import {
   type RichMarkdownContextMenuCommandPayload
 } from '../shared/rich-markdown-context-menu'
 import type {
-  SshConnectionState,
-  SshConfigImportResult,
-  SshTargetAddResult,
-  SshTarget,
-  PortForwardEntry,
-  EnrichedDetectedPort
-} from '../shared/ssh-types'
-import type {
   AgentStatusClearIpcPayload,
   AgentStatusIpcPayload,
   MigrationUnsupportedPtyEntry
@@ -178,7 +182,18 @@ import type {
   SpeechTranscriptEvent
 } from '../shared/speech-types'
 import type { TelemetryConsentState } from '../shared/telemetry-consent-types'
-import type { PreflightRuntimeContext, RefreshAgentsResult } from './api-types'
+import type {
+  PreflightRuntimeContext,
+  RefreshAgentsResult,
+  NativeChatAppendedPayload,
+  NativeChatReadSessionResult,
+  NativeChatSubscriptionFrame,
+  PluginHostInstallResult,
+  PluginHostInstallSource,
+  PluginHostListEntry,
+  PluginHostLogLine,
+  PreloadApi
+} from './api-types'
 import type { AgentKind, LaunchSource, RequestKind } from '../shared/telemetry-events'
 import type { AppStarSource } from '../shared/gh-star-source'
 import type { ExecutionHostId } from '../shared/execution-host'
@@ -201,11 +216,6 @@ import type { KeybindingActionId, KeybindingFileSnapshot } from '../shared/keybi
 import type { AiVaultListArgs, AiVaultSubagentListArgs } from '../shared/ai-vault-types'
 import type { AiVaultPrepareSessionResumeArgs } from '../shared/ai-vault-resume-preparation'
 import type { AgentType } from '../shared/native-chat-types'
-import type {
-  NativeChatAppendedPayload,
-  NativeChatReadSessionResult,
-  NativeChatSubscriptionFrame
-} from './api-types'
 import {
   ORCA_APP_RESTART_ABORTED_EVENT,
   ORCA_APP_RESTART_STARTED_EVENT,
@@ -248,13 +258,6 @@ import type {
 } from '../shared/crash-reporting'
 import type { RendererHeapStatistics } from '../shared/renderer-heap-statistics'
 import { readRendererHeapStatistics } from './renderer-heap-statistics-reader'
-import type {
-  PluginHostInstallResult,
-  PluginHostInstallSource,
-  PluginHostListEntry,
-  PluginHostLogLine,
-  PreloadApi
-} from './api-types'
 import {
   createUpdaterQuitAbortRelay,
   prepareRendererForAppRestart
@@ -901,6 +904,7 @@ const api = {
       sessionExpired?: boolean
       coldRestore?: { scrollback: string; cwd: string; cols?: number; rows?: number }
       startupCwdFallback?: { kind: 'worktree'; cwd: string }
+      agentResumeUnavailable?: true
     }> => ipcRenderer.invoke('pty:spawn', opts),
 
     write: (id: string, data: string): void => {
@@ -1988,7 +1992,16 @@ const api = {
       accountId: string | null
       runtime?: 'host' | 'wsl'
       wslDistro?: string | null
-    }): Promise<unknown> => ipcRenderer.invoke('codexAccounts:select', args)
+    }): Promise<unknown> => ipcRenderer.invoke('codexAccounts:select', args),
+    listStalePanes: (args: {
+      ptyIds: string[]
+    }): Promise<
+      { ptyId: string; launchAccountId: string | null; activeAccountId: string | null }[]
+    > => ipcRenderer.invoke('codexAccounts:listStalePanes', args),
+    listRecordedPaneLanes: (args: { ptyIds: string[] }): Promise<Record<string, string>> =>
+      ipcRenderer.invoke('codexAccounts:listRecordedPaneLanes', args),
+    forgetStalePanes: (args: { ptyIds: string[] }): Promise<void> =>
+      ipcRenderer.invoke('codexAccounts:forgetStalePanes', args)
   },
 
   claudeAccounts: {
@@ -2321,7 +2334,18 @@ const api = {
     discover: (target?: SkillDiscoveryTarget): Promise<SkillDiscoveryResult> =>
       ipcRenderer.invoke('skills:discover', target),
     freshnessInventory: (): Promise<SkillFreshnessInventory> =>
-      ipcRenderer.invoke('skills:freshnessInventory')
+      ipcRenderer.invoke('skills:freshnessInventory'),
+    startUpdateRun: (names: string[]): Promise<SkillUpdateStartResult> =>
+      ipcRenderer.invoke('skills:startUpdateRun', names),
+    cancelUpdateRun: (): Promise<void> => ipcRenderer.invoke('skills:cancelUpdateRun'),
+    acknowledgeUpdateRun: (): Promise<void> => ipcRenderer.invoke('skills:acknowledgeUpdateRun'),
+    getUpdateRun: (): Promise<SkillUpdateRun> => ipcRenderer.invoke('skills:getUpdateRun'),
+    onUpdateRun: (callback: (run: SkillUpdateRun) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, run: SkillUpdateRun): void =>
+        callback(run)
+      ipcRenderer.on('skills:updateRun', listener)
+      return () => ipcRenderer.removeListener('skills:updateRun', listener)
+    }
   },
 
   pet: {

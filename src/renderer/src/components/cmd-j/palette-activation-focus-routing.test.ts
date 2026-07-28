@@ -45,14 +45,20 @@ describe('Cmd+J activation focus routing (#9939)', () => {
     expect(handler).not.toMatch(/focusFallbackSurface\(\)/)
   })
 
-  it('focuses the destination workspace when jumping to an already-open issue match', () => {
-    const source = paletteSource()
+  it('falls back when scoped focus declines for an already-open issue match', () => {
+    const handler = sourceBetween(
+      paletteSource(),
+      'const handleCreateWorktree = useCallback',
+      'const handleCloseAutoFocus'
+    )
     const activationCalls =
-      source.match(/const activation = activateAndRevealWorktree\(activeMatch\.id\)/g)?.length ?? 0
-    // Both issue-number match paths (PR and issue lookup) must focus the destination.
+      handler.match(/const activation = activateAndRevealWorktree\(activeMatch\.id\)/g)?.length ?? 0
+    // Both issue/PR match paths must restore focus when terminal routing declines.
     expect(activationCalls).toBe(2)
     expect(
-      source.match(/queueWorkspaceActivationTerminalFocus\(activeMatch\.id, activation\)/g)?.length
+      handler.match(
+        /if \(!queueWorkspaceActivationTerminalFocus\(activeMatch\.id, activation\)\) \{\s*focusFallbackSurface\(\)\s*\}/g
+      )?.length
     ).toBe(activationCalls)
   })
 })
