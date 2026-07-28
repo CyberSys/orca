@@ -190,7 +190,11 @@ export function normalizeInteractivePromptField(
     return undefined
   }
   const truncated = truncatePreservingSurrogates(value, maxLength)
-  return truncated.length > 0 ? truncated : undefined
+  if (truncated.length === 0) {
+    return undefined
+  }
+  // Why: V8 slices retain the oversized hook payload while this value is cached.
+  return value.length > maxLength ? JSON.parse(JSON.stringify(truncated)) : truncated
 }
 
 export function normalizeOptionalField(value: unknown, maxLength: number): string | undefined {
