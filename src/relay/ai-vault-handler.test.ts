@@ -138,6 +138,24 @@ describe('AiVaultHandler', () => {
     await expect(second).resolves.toEqual(emptyResult())
   })
 
+  it('soft-disables the method instead of aborting relay startup on an unsupported platform', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'freebsd', configurable: true })
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    try {
+      const dispatcher = createMockDispatcher()
+
+      expect(() => new AiVaultHandler(dispatcher.value)).not.toThrow()
+
+      expect(() => dispatcher.call(SSH_AI_VAULT_LIST_SESSIONS_METHOD, {})).toThrow(/No handler/)
+    } finally {
+      stderr.mockRestore()
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+  })
+
   it('stops a relay-local scan when the owning request is cancelled', async () => {
     const dispatcher = createMockDispatcher()
     new AiVaultHandler(dispatcher.value, {

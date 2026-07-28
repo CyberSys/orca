@@ -1,5 +1,4 @@
 import { extname } from 'node:path'
-import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
 import { joinRemotePath } from '../ssh/ssh-remote-platform'
@@ -7,6 +6,7 @@ import { isMissingRemoteSessionPathError, statRemoteSessionFile } from './remote
 import { partitionSubagentTranscriptPaths } from './session-scanner-subagent-transcripts'
 import type { FileWithMtime } from './session-scanner-types'
 import { errorMessage } from './session-scanner-values'
+import { mapRemoteScanBatches } from './remote-session-scan-batching'
 import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
 import { recordRemoteSessionScanIssue } from './remote-session-scan-issues'
 import type {
@@ -29,8 +29,9 @@ export async function discoverRemoteSourceCandidates(args: {
     ? partitionSubagentTranscriptPaths(walked)
     : null
   const paths = partition ? partition.sessionFilePaths : walked
-  const files = await mapDiscoveryConcurrently(
+  const files = await mapRemoteScanBatches(
     paths,
+    REMOTE_DISCOVERY_CONCURRENCY,
     (path) =>
       statRemoteSessionFile(
         args.context.provider,
@@ -133,19 +134,4 @@ function recordRemoteDirectoryIssue(
       message: errorMessage(err)
     })
   }
-}
-
-async function mapDiscoveryConcurrently<T, U>(
-  items: readonly T[],
-  mapper: (item: T) => Promise<U>,
-  signal?: AbortSignal
-): Promise<U[]> {
-  const results: U[] = []
-  for (let index = 0; index < items.length; index += REMOTE_DISCOVERY_CONCURRENCY) {
-    throwIfRemoteSessionScanCancelled(signal)
-    const batch = items.slice(index, index + REMOTE_DISCOVERY_CONCURRENCY)
-    results.push(...(await Promise.all(batch.map(mapper))))
-    await yieldToEventLoop()
-  }
-  return results
 }

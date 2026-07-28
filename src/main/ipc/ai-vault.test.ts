@@ -114,10 +114,14 @@ describe('listAiVaultSessions host routing', () => {
       scopePaths: ['/home/ada/repo']
     })
 
-    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith('dev-box', {
-      limit: undefined,
-      scopePaths: ['/home/ada/repo']
-    })
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith(
+      'dev-box',
+      {
+        limit: undefined,
+        scopePaths: ['/home/ada/repo']
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
     expect(mocks.scanRemoteAiVaultSessions).not.toHaveBeenCalled()
     expect(scanned.sessions[0]).toMatchObject({
       executionHostId: 'ssh:dev-box',
@@ -134,11 +138,53 @@ describe('listAiVaultSessions host routing', () => {
       scopePaths
     })
 
-    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith('dev-box', {
-      limit: undefined,
-      scopePaths: scopePaths.slice(0, 64),
-      scopePathsTruncated: true
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledWith(
+      'dev-box',
+      {
+        limit: undefined,
+        scopePaths: scopePaths.slice(0, 64),
+        scopePathsTruncated: true
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+  })
+
+  it('caps and reports oversized project scopes on the SSH filesystem fallback', async () => {
+    const scopePaths = Array.from({ length: 80 }, (_, index) => `/repo/${index}`)
+
+    const scanned = await _internals.listAiVaultSessions({
+      executionHostScope: 'ssh:dev-box',
+      scopePaths
     })
+
+    expect(mocks.scanRemoteAiVaultSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ scopePaths: scopePaths.slice(0, 64) })
+    )
+    expect(scanned.issues).toContainEqual(
+      expect.objectContaining({
+        kind: 'scope',
+        message: expect.stringContaining('first 64 project paths')
+      })
+    )
+  })
+
+  it('coalesces concurrent cancellable requests into one scan', async () => {
+    let resolveRelay: (() => void) | undefined
+    mocks.requestActiveSshAiVaultSessionList.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRelay = () => resolve(result([]))
+        })
+    )
+    const args = { executionHostScope: 'ssh:dev-box' as const }
+
+    const first = _internals.listAiVaultSessions(args, { signal: new AbortController().signal })
+    const second = _internals.listAiVaultSessions(args, { signal: new AbortController().signal })
+    await vi.waitFor(() => expect(resolveRelay).toBeDefined())
+
+    expect(mocks.requestActiveSshAiVaultSessionList).toHaveBeenCalledTimes(1)
+    resolveRelay?.()
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
   })
 
   it('does not start a second remote crawl after the relay scan budget expires', async () => {

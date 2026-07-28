@@ -36,9 +36,11 @@ async function readRemoteCodexIndexTitles(
 ): Promise<Map<string, string>> {
   const titleBySessionId = new Map<string, string>()
   try {
+    throwIfRemoteSessionScanCancelled(signal)
     const { content, isBinary } = await provider.readFile(
       joinRemotePath(hostPlatform, codexHome, CODEX_SESSION_INDEX_FILE)
     )
+    throwIfRemoteSessionScanCancelled(signal)
     if (isBinary) {
       return titleBySessionId
     }

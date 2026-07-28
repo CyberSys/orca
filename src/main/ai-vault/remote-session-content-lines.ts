@@ -8,6 +8,8 @@ export async function* remoteSessionContentLines(
   content: string,
   signal?: AbortSignal
 ): AsyncGenerator<string> {
+  // Content below one yield window would otherwise never observe cancellation.
+  throwIfRemoteSessionScanCancelled(signal)
   let lineStart = 0
   let yieldStart = 0
   let linesSinceYield = 0

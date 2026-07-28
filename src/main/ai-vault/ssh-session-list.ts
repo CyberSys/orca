@@ -1,7 +1,8 @@
 import {
   AI_VAULT_SCOPE_PATHS_MAX_COUNT,
   type AiVaultListArgs,
-  type AiVaultListResult
+  type AiVaultListResult,
+  type AiVaultScanIssue
 } from '../../shared/ai-vault-types'
 import { toSshExecutionHostId } from '../../shared/execution-host'
 import {
@@ -19,14 +20,16 @@ export async function scanSshAiVaultSessions(
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<AiVaultListResult> {
   const executionHostId = toSshExecutionHostId(targetId)
+  // Both legs scan the same capped set, so the fallback can't quietly scan more
+  // paths — or skip the truncation notice — than the relay leg would.
+  const scopePaths = args?.scopePaths?.slice(0, AI_VAULT_SCOPE_PATHS_MAX_COUNT)
+  const scopePathsTruncated = (args?.scopePaths?.length ?? 0) > AI_VAULT_SCOPE_PATHS_MAX_COUNT
   let relayError: unknown
   try {
     const params = {
       limit: args?.limit,
-      scopePaths: args?.scopePaths?.slice(0, AI_VAULT_SCOPE_PATHS_MAX_COUNT),
-      ...(args?.scopePaths && args.scopePaths.length > AI_VAULT_SCOPE_PATHS_MAX_COUNT
-        ? { scopePathsTruncated: true }
-        : {})
+      scopePaths,
+      ...(scopePathsTruncated ? { scopePathsTruncated: true } : {})
     }
     const relayResult =
       options.signal || options.timeoutMs !== undefined
@@ -59,18 +62,36 @@ export async function scanSshAiVaultSessions(
     remoteHome: hostInfo.remoteHome,
     hostPlatform: hostInfo.hostPlatform,
     limit: args?.limit,
-    scopePaths: args?.scopePaths,
+    scopePaths,
     signal: options.signal
   })
+  const scopeIssues = scopePathsTruncated
+    ? [scopeTruncationIssue(executionHostId, hostInfo.remoteHome)]
+    : []
   if (!relayError || fallbackResult.sessions.length > 0 || fallbackResult.issues.length === 0) {
-    return fallbackResult
+    return { ...fallbackResult, issues: [...fallbackResult.issues, ...scopeIssues] }
   }
   return {
     ...fallbackResult,
     issues: [
       ...sshScanIssueResult(executionHostId, targetId, errorMessage(relayError)).issues,
-      ...fallbackResult.issues
+      ...fallbackResult.issues,
+      ...scopeIssues
     ]
+  }
+}
+
+// Mirrors the notice the relay leg appends so both legs report the same cap.
+function scopeTruncationIssue(
+  executionHostId: `ssh:${string}`,
+  remoteHome: string
+): AiVaultScanIssue {
+  return {
+    executionHostId,
+    agent: 'codex',
+    kind: 'scope',
+    path: remoteHome,
+    message: `Only the first ${AI_VAULT_SCOPE_PATHS_MAX_COUNT} project paths were scanned.`
   }
 }
 

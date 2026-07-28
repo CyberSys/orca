@@ -1,4 +1,4 @@
-import type { AiVaultListResult } from '../shared/ai-vault-types'
+import type { AiVaultListResult } from '../../shared/ai-vault-types'
 
 type ScanEntry = {
   controller: AbortController

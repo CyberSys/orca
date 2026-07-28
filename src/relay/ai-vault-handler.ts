@@ -15,8 +15,9 @@ import { getRemoteHostPlatform } from '../main/ssh/ssh-remote-platform'
 import type { RemoteHostPlatform } from '../main/ssh/ssh-remote-platform'
 import { parseUnameToRelayPlatform } from '../main/ssh/relay-protocol'
 import { readRelayFileContent } from './fs-handler-file-read'
+import { relayLogLine } from './relay-diagnostic-log'
 import type { RelayDispatcher } from './dispatcher'
-import { AiVaultScanCoordinator } from './ai-vault-scan-coordinator'
+import { AiVaultScanCoordinator } from '../main/ai-vault/ai-vault-scan-coordinator'
 
 type ScanRemoteSessions = typeof scanRemoteAiVaultSessions
 
@@ -28,22 +29,31 @@ type AiVaultHandlerOptions = {
 
 export class AiVaultHandler {
   private readonly remoteHome: string
-  private readonly hostPlatform: RemoteHostPlatform
   private readonly scanRemoteSessions: ScanRemoteSessions
   private readonly provider: RemoteSessionFilesystemProvider
   private readonly scanCoordinator = new AiVaultScanCoordinator()
 
   constructor(dispatcher: RelayDispatcher, options: AiVaultHandlerOptions = {}) {
     this.remoteHome = options.remoteHome ?? homedir()
-    this.hostPlatform = options.hostPlatform ?? currentRelayHostPlatform()
     this.scanRemoteSessions = options.scanRemoteSessions ?? scanRemoteAiVaultSessions
     this.provider = createRelayAiVaultFilesystemProvider()
+    const hostPlatform = options.hostPlatform ?? currentRelayHostPlatform()
+    // Why: an OS/arch this build has no path flavor for must not abort relay
+    // startup — leaving the method unregistered soft-disables the feature and
+    // the host falls back to its own SSH filesystem scan.
+    if (!hostPlatform) {
+      relayLogLine(
+        `[relay] Agent Session History disabled: unsupported platform ${process.platform}-${process.arch}`
+      )
+      return
+    }
     dispatcher.onRequest(SSH_AI_VAULT_LIST_SESSIONS_METHOD, (params, context) =>
-      this.listSessions(params, context.signal)
+      this.listSessions(hostPlatform, params, context.signal)
     )
   }
 
   private async listSessions(
+    hostPlatform: RemoteHostPlatform,
     rawParams: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<AiVaultListResult> {
@@ -56,7 +66,7 @@ export class AiVaultHandler {
           provider: this.provider,
           executionHostId: LOCAL_EXECUTION_HOST_ID,
           remoteHome: this.remoteHome,
-          hostPlatform: this.hostPlatform,
+          hostPlatform,
           limit: params.limit,
           scopePaths: params.scopePaths,
           signal: scanSignal
@@ -109,12 +119,9 @@ export function normalizeSshAiVaultRelayListParams(
   }
 }
 
-function currentRelayHostPlatform(): RemoteHostPlatform {
+function currentRelayHostPlatform(): RemoteHostPlatform | null {
   const relayPlatform = parseUnameToRelayPlatform(process.platform, process.arch)
-  if (!relayPlatform) {
-    throw new Error(`Unsupported relay platform: ${process.platform}-${process.arch}`)
-  }
-  return getRemoteHostPlatform(relayPlatform)
+  return relayPlatform ? getRemoteHostPlatform(relayPlatform) : null
 }
 
 function createRelayAiVaultFilesystemProvider(): RemoteSessionFilesystemProvider {

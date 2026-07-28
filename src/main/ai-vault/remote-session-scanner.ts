@@ -18,6 +18,7 @@ import type { RemoteScannerContext, RemoteSessionCandidate } from './remote-sess
 import { sessionSortTime } from './session-scanner-accumulator'
 import { createAntigravityWorkspaceResolver } from './session-scanner-antigravity-history'
 import { errorMessage } from './session-scanner-values'
+import { mapRemoteScanBatches } from './remote-session-scan-batching'
 import { throwIfRemoteSessionScanCancelled } from './remote-session-scan-cancellation'
 import { recordRemoteSessionScanIssue } from './remote-session-scan-issues'
 import type { RemoteSessionFilesystemProvider } from './remote-session-scanner-types'
@@ -55,8 +56,9 @@ export async function scanRemoteAiVaultSessions(args: {
   }
   const candidates = dedupeCodexRolloutFileAliases(
     (
-      await mapRemoteScanConcurrently(
+      await mapRemoteScanBatches(
         remoteSessionSources(args.remoteHome, args.hostPlatform),
+        REMOTE_SCAN_CONCURRENCY,
         (source) => discoverRemoteSourceCandidates({ source, context, issues }),
         args.signal
       )
@@ -146,24 +148,17 @@ async function scanRemoteInScopeSessions(args: {
   const candidates = args.candidates
     .filter((candidate) => !args.alreadyParsedFilePaths.has(candidate.file.path))
     .slice(0, REMOTE_SCOPE_PARSE_LIMIT)
-  const sessions: AiVaultSession[] = []
+  const results = await mapRemoteScanBatches(
+    candidates,
+    REMOTE_SCAN_CONCURRENCY,
+    (candidate) => parseRemoteSessionCandidate(candidate, args.context, args.issues),
+    args.context.signal
+  )
 
-  for (let index = 0; index < candidates.length; index += REMOTE_SCAN_CONCURRENCY) {
-    throwIfRemoteSessionScanCancelled(args.context.signal)
-    const batch = candidates.slice(index, index + REMOTE_SCAN_CONCURRENCY)
-    const results = await Promise.all(
-      batch.map((candidate) => parseRemoteSessionCandidate(candidate, args.context, args.issues))
-    )
-    sessions.push(
-      ...results.filter(
-        (session): session is AiVaultSession =>
-          isAiVaultSession(session) && isRemoteSessionInScope(session, args.scopePaths)
-      )
-    )
-    await yieldToEventLoop()
-  }
-
-  return sessions
+  return results.filter(
+    (session): session is AiVaultSession =>
+      isAiVaultSession(session) && isRemoteSessionInScope(session, args.scopePaths)
+  )
 }
 
 async function parseRemoteSessionCandidate(
@@ -246,19 +241,4 @@ function canStopParsingRemoteSessions(
 
 function isAiVaultSession(session: AiVaultSession | null): session is AiVaultSession {
   return Boolean(session)
-}
-
-async function mapRemoteScanConcurrently<T, U>(
-  items: readonly T[],
-  mapper: (item: T) => Promise<U>,
-  signal?: AbortSignal
-): Promise<U[]> {
-  const results: U[] = []
-  for (let index = 0; index < items.length; index += REMOTE_SCAN_CONCURRENCY) {
-    throwIfRemoteSessionScanCancelled(signal)
-    const batch = items.slice(index, index + REMOTE_SCAN_CONCURRENCY)
-    results.push(...(await Promise.all(batch.map(mapper))))
-    await yieldToEventLoop()
-  }
-  return results
 }

@@ -12,6 +12,7 @@ import { claudeProjectsRootDirs } from '../ai-vault/session-scanner-source-disco
 import { isPathInsideOrEqual } from '../../shared/cross-platform-path'
 import { aiVaultScanIssueResult, mergeAiVaultListResults } from '../ai-vault/session-list-results'
 import { scanSshAiVaultSessions } from '../ai-vault/ssh-session-list'
+import { AiVaultScanCoordinator } from '../ai-vault/ai-vault-scan-coordinator'
 import type {
   AiVaultListArgs,
   AiVaultListResult,
@@ -59,8 +60,7 @@ type RuntimeAiVaultHostInfo = {
 }
 
 let cachedList: CachedAiVaultList | null = null
-let inflightList: Promise<AiVaultListResult> | null = null
-let inflightKey: string | null = null
+let scanCoordinator = new AiVaultScanCoordinator()
 let handlerOptions: AiVaultHandlerOptions = {}
 const listCancellations = createSenderScopedRequestCancellations()
 
@@ -90,32 +90,24 @@ async function listAiVaultSessions(
   if (args?.force !== true && cachedList?.key === key && cachedList.expiresAt > now) {
     return cachedList.result
   }
-  if (inflightList && inflightKey === key && !options.signal) {
-    return inflightList
-  }
-
-  inflightKey = key
-  const pending = scanAiVaultSessionsByHostScope(args, executionHostScope, options.signal)
-    .then((result) => {
-      if (!result.issues.some((issue) => issue.kind === 'host')) {
-        cachedList = {
-          key,
-          result,
-          expiresAt: Date.now() + AI_VAULT_CACHE_TTL_MS
+  // Why: every renderer request carries its own cancellation signal, so
+  // coalescing has to survive them — the coordinator hands all same-key callers
+  // one scan and only aborts it once every one of them has cancelled.
+  return scanCoordinator.run({
+    key,
+    signal: options.signal,
+    start: (scanSignal) =>
+      scanAiVaultSessionsByHostScope(args, executionHostScope, scanSignal).then((result) => {
+        if (!result.issues.some((issue) => issue.kind === 'host')) {
+          cachedList = {
+            key,
+            result,
+            expiresAt: Date.now() + AI_VAULT_CACHE_TTL_MS
+          }
         }
-      }
-      return result
-    })
-    .finally(() => {
-      // Only clear tracking if it still refers to this request: a concurrent
-      // different-scope scan may have replaced it and must stay dedupable.
-      if (inflightKey === key && inflightList === pending) {
-        inflightKey = null
-        inflightList = null
-      }
-    })
-  inflightList = pending
-  return pending
+        return result
+      })
+  })
 }
 
 async function scanAiVaultSessionsByHostScope(
@@ -320,8 +312,7 @@ async function listAiVaultSubagentSessions(
 
 function resetAiVaultCacheForTests(): void {
   cachedList = null
-  inflightList = null
-  inflightKey = null
+  scanCoordinator = new AiVaultScanCoordinator()
   handlerOptions = {}
   // The local leg delegates to the shared cache module; reset it too so tests
   // never see a scan cached by an earlier case.
