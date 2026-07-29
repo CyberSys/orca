@@ -215,6 +215,21 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
+  it('uses the selected Chinese candidate instead of its Pinyin preedit', async () => {
+    const { emitted, terminal, textarea } = openTerminal()
+
+    dispatchCompositionEvent(textarea, 'compositionstart')
+    dispatchCompositionEvent(textarea, 'compositionupdate', 'ni')
+    textarea.value = 'ni'
+    dispatchCompositionEvent(textarea, 'compositionend', '你')
+    textarea.value = '你'
+    dispatchComposedInput(textarea, { data: '你', inputType: 'insertText' })
+    await nextEventLoop()
+
+    expect(emitted.join('')).toBe('你')
+    terminal.dispose()
+  })
+
   it('keeps an unmatched Japanese keypress after its composition', async () => {
     const { emitted, terminal, textarea } = openTerminal()
     startComposition(textarea, '日')
