@@ -395,15 +395,13 @@ describe('CodexRestartChip focus target', () => {
       },
       ptyIdsByTabId: { 'tab-1': ['pty-1'] }
     })
-    useAppStore
-      .getState()
-      .markCodexRestartNotices([
-        {
-          ptyId: 'pty-1',
-          previousAccountLabel: 'old@example.com',
-          nextAccountLabel: 'new@example.com'
-        }
-      ])
+    useAppStore.getState().markCodexRestartNotices([
+      {
+        ptyId: 'pty-1',
+        previousAccountLabel: 'old@example.com',
+        nextAccountLabel: 'new@example.com'
+      }
+    ])
     return healthyPaneInput
   }
 
