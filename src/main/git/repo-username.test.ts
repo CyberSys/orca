@@ -21,7 +21,13 @@ import {
 
 function makeExecError(
   message: string,
-  extra: { code?: string; killed?: boolean; signal?: string; stderr?: string } = {}
+  extra: {
+    code?: string
+    killed?: boolean
+    signal?: string
+    stdout?: string
+    stderr?: string
+  } = {}
 ): Error {
   return Object.assign(new Error(message), { stdout: '', stderr: '', ...extra })
 }
@@ -158,6 +164,19 @@ describe('resolveLocalGitUsername', () => {
     for (const [, options] of ghExecFileAsyncMock.mock.calls) {
       expect(options).toMatchObject({ timeout: 2500 })
     }
+  })
+
+  it('ignores rate-limit JSON bodies from gh api user so they never become branch prefixes', async () => {
+    originRemoteUrl = 'https://github.com/stablyai/orca.git'
+    const rateLimitJson = JSON.stringify({
+      message: 'API rate limit exceeded for user ID 6427696',
+      status: '403'
+    })
+    ghExecFileAsyncMock
+      .mockRejectedValueOnce(makeExecError('gh api failed', { stdout: rateLimitJson }))
+      .mockRejectedValueOnce(makeExecError('gh auth status failed'))
+
+    await expect(resolveLocalGitUsername('/repo')).resolves.toBe('')
   })
 
   it('skips auth status fallback when GitHub CLI API lookup times out', async () => {

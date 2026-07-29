@@ -11,6 +11,9 @@ import {
   OptionalString,
   TriStateLinkedIssue
 } from '../schemas'
+import { TaskSourceContextSchema } from '../../../../shared/task-source-context-schema'
+import { WorkspaceLinkedItemSchema } from '../../../../shared/workspace-linked-item-schema'
+import { isWorkspaceLinkedItemSourceContextMatch } from '../../../../shared/workspace-linked-item-source-context'
 
 const OptionalTuiAgent = z
   .unknown()
@@ -88,6 +91,8 @@ export const WorktreeCreate = z
     linkedBitbucketPR: TriStateLinkedIssue,
     linkedAzureDevOpsPR: TriStateLinkedIssue,
     linkedGiteaPR: TriStateLinkedIssue,
+    linkedWorkItem: WorkspaceLinkedItemSchema.nullable().optional(),
+    linkedTaskSourceContext: TaskSourceContextSchema.nullable().optional(),
     comment: OptionalString,
     displayName: OptionalString,
     telemetrySource: z
@@ -160,6 +165,19 @@ export const WorktreeCreate = z
     cliProvenanceRequest: CliWorkspaceProvenanceRequest.optional()
   })
   .superRefine((params, ctx) => {
+    if (
+      params.linkedWorkItem &&
+      params.linkedTaskSourceContext &&
+      !isWorkspaceLinkedItemSourceContextMatch(
+        params.linkedWorkItem,
+        params.linkedTaskSourceContext
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Linked work item and source context identities must match'
+      })
+    }
     if ((params.parentWorkspace || params.parentWorktree) && params.noParent === true) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -203,6 +221,8 @@ export const WorktreeSet = WorktreeSelector.extend({
   linkedBitbucketPR: TriStateLinkedIssue,
   linkedAzureDevOpsPR: TriStateLinkedIssue,
   linkedGiteaPR: TriStateLinkedIssue,
+  linkedWorkItem: WorkspaceLinkedItemSchema.nullable().optional(),
+  linkedTaskSourceContext: TaskSourceContextSchema.nullable().optional(),
   isArchived: OptionalBoolean,
   isUnread: OptionalBoolean,
   isPinned: OptionalBoolean,
@@ -228,6 +248,16 @@ export const WorktreeSet = WorktreeSelector.extend({
   parentWorktree: OptionalString,
   noParent: OptionalBoolean
 }).superRefine((params, ctx) => {
+  if (
+    params.linkedWorkItem &&
+    params.linkedTaskSourceContext &&
+    !isWorkspaceLinkedItemSourceContextMatch(params.linkedWorkItem, params.linkedTaskSourceContext)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Linked work item and source context identities must match'
+    })
+  }
   if (params.parentWorktree && params.noParent === true) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

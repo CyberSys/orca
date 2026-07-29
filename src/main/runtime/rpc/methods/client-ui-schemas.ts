@@ -32,6 +32,7 @@ const LegacyWorktreeCardProperty = z.enum([
   'branch',
   'issue',
   'linear-issue',
+  'jira-issue',
   'pr',
   'automation',
   'comment',

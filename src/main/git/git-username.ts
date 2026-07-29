@@ -31,6 +31,24 @@ export function normalizeGitUsername(value: string): string {
 }
 
 /**
+ * Hosted account logins used as branch-prefix segments must be single-path
+ * tokens. Reject multi-line / JSON error bodies from a failed `gh api user`
+ * (rate-limit 403 still prints JSON on stdout) so they never become branch names.
+ */
+export function isPlausibleHostedLogin(value: string): boolean {
+  // GitHub usernames: 1–39 chars, alphanumerics and single hyphens, no leading/trailing hyphen.
+  return (
+    /^[A-Za-z0-9]$/.test(value) ||
+    (/^[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9]$/.test(value) && !value.includes('--'))
+  )
+}
+
+function normalizeHostedLogin(value: string): string {
+  const normalized = normalizeGitUsername(value)
+  return normalized && isPlausibleHostedLogin(normalized) ? normalized : ''
+}
+
+/**
  * A resolved username plus whether every probe on the way to it completed.
  * Non-authoritative '' (a probe timed out) must not overwrite a previously
  * persisted username; authoritative '' should clear one.
@@ -46,7 +64,7 @@ export async function getSshGitUsername(
   for (const key of EXPLICIT_USERNAME_CONFIG_KEYS) {
     try {
       const { stdout } = await provider.exec(['config', '--get', key], repoPath)
-      const username = normalizeGitUsername(stdout)
+      const username = normalizeHostedLogin(stdout)
       if (username) {
         return username
       }
@@ -130,7 +148,7 @@ function parseGhAuthStatusLogin(output: string): string {
 
 async function probeGhLoginOnce(): Promise<GhLoginOutcome> {
   const api = await runGhLoginProbe(['api', 'user', '-q', '.login'])
-  const apiLogin = normalizeGitUsername(api.stdout.trim())
+  const apiLogin = normalizeHostedLogin(api.stdout)
   if (apiLogin) {
     return { login: apiLogin, timedOut: false }
   }
@@ -144,7 +162,7 @@ async function probeGhLoginOnce(): Promise<GhLoginOutcome> {
     return { login: '', timedOut: true }
   }
   const output = `${status.stdout}\n${status.stderr}`
-  return { login: normalizeGitUsername(parseGhAuthStatusLogin(output)), timedOut: false }
+  return { login: normalizeHostedLogin(parseGhAuthStatusLogin(output)), timedOut: false }
 }
 
 async function getGhLoginOutcome(): Promise<GhLoginOutcome> {
@@ -270,7 +288,8 @@ export async function resolveLocalGitUsernameDetailed(
         cwd: repoPath,
         timeout: LOCAL_GIT_READ_TIMEOUT_MS
       })
-      const username = normalizeGitUsername(stdout)
+      // Why: config can hold free-form strings; only branch-safe logins become prefixes.
+      const username = normalizeHostedLogin(stdout)
       if (username) {
         return { username, authoritative: true }
       }
