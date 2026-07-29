@@ -161,6 +161,24 @@ describe('WorkspaceKanbanSearchField', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('leaves Escape to the IME while a composition is in progress', () => {
+    renderField({ query: '検索', matchCount: 1, totalCount: 12 })
+
+    act(() => {
+      input().dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          isComposing: true,
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    })
+
+    expect(onClear).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('keeps focus in the field after the clear button unmounts itself', () => {
     renderField({ query: 'orca', matchCount: 3, totalCount: 12 })
     act(() => {

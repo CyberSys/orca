@@ -93,7 +93,9 @@ export default function WorkspaceKanbanSearchField({
         onKeyDown={(event) => {
           // Why: useWorkspaceBoardPanel defers Escape to board text fields, so
           // this field is the only handler — it must cover both outcomes.
-          if (event.key !== 'Escape') {
+          // Mid-composition Escape belongs to the IME, which cancels the
+          // in-progress reading rather than the query behind it.
+          if (event.key !== 'Escape' || event.nativeEvent.isComposing) {
             return
           }
           event.preventDefault()
