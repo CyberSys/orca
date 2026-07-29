@@ -391,15 +391,18 @@ export function useTerminalKeyboardShortcuts({
       const capturedBinding = panePtyBindingsRef.current.get(pane.id) as
         | (IDisposable & { requestDroidReconfirmation?: () => void })
         | undefined
+      const getCurrentManager = () => managerRef.current
+      const getCurrentTransport = () => paneTransportsRef.current.get(pane.id)
+      const getCurrentBinding = () => panePtyBindingsRef.current.get(pane.id)
       return () => {
         const targetPaneMounted =
-          managerRef.current
+          getCurrentManager()
             ?.getPanes()
             .some((candidate) => candidate.id === pane.id && candidate.leafId === pane.leafId) ===
           true
         const sent = sendCapturedTerminalInput({
           targetPaneMounted,
-          currentTransport: paneTransportsRef.current.get(pane.id),
+          currentTransport: getCurrentTransport(),
           capturedTransport,
           capturedPtyId,
           data
@@ -408,10 +411,7 @@ export function useTerminalKeyboardShortcuts({
           recordTerminalUserInputForLeaf(tabId, pane.leafId)
           if (data === '\x1b[13;2u') {
             // Why: this write bypasses PTY onData, so no-OSC shells need reconfirmation.
-            requestCapturedTerminalReconfirmation(
-              panePtyBindingsRef.current.get(pane.id),
-              capturedBinding
-            )
+            requestCapturedTerminalReconfirmation(getCurrentBinding(), capturedBinding)
           }
         }
       }
