@@ -98,14 +98,16 @@ describe('installTerminalImeCompositionRoute', () => {
     expect(harness.input).toHaveBeenCalledExactlyOnceWith('한')
   })
 
-  it('keeps the prior captured session until its delayed completion', () => {
+  it('keeps every captured session until its delayed completion', () => {
     const harness = createHarness()
     harness.start(1)
     harness.start(2)
+    harness.start(3)
     harness.end(1, '안')
     harness.end(2, '녕')
+    harness.end(3, '하')
 
-    expect(harness.input.mock.calls).toEqual([['안'], ['녕']])
+    expect(harness.input.mock.calls).toEqual([['안'], ['녕'], ['하']])
   })
 
   it('drops a commit after same-pane PTY replacement', () => {

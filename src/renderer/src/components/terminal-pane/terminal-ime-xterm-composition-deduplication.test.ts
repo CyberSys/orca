@@ -181,16 +181,17 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
-  it('preserves mixed Hangul ASCII Hangul input', async () => {
+  it('preserves a macOS Hangul candidate when the input source changes to ASCII', async () => {
     const { emitted, terminal, textarea } = openTerminal()
 
-    typeObservedIbusCommit(textarea, '한')
-    typeObservedAscii(textarea, 'abc')
-    typeObservedIbusCommit(textarea, '글')
-    dispatchKeydown(textarea, 'Enter', 'Enter', 13)
+    startComposition(textarea, '한')
+    dispatchCompositionEvent(textarea, 'compositionupdate', 'a')
+    textarea.value = '한a'
+    dispatchComposedInput(textarea, { data: 'a', inputType: 'insertText' })
+    dispatchCompositionEvent(textarea, 'compositionend', 'a')
     await nextEventLoop()
 
-    expect(emitted.join('')).toBe('한abc글\r')
+    expect(emitted.join('')).toBe('한a')
     terminal.dispose()
   })
 

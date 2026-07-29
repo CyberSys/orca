@@ -10,7 +10,6 @@ type CompositionSessionDetail = {
 }
 
 type CapturedCompositionSession = {
-  id: number
   ptyId: string | null
 }
 
@@ -35,8 +34,7 @@ export function installTerminalImeCompositionRoute(args: {
   getCurrentTransport: () => PtyTransport | undefined
 }): IDisposable {
   const terminalElement = args.terminalElement
-  let session: CapturedCompositionSession | null = null
-  let previousSession: CapturedCompositionSession | null = null
+  const sessions = new Map<number, CapturedCompositionSession>()
   let disposed = false
 
   if (
@@ -52,11 +50,9 @@ export function installTerminalImeCompositionRoute(args: {
     if (!detail || disposed) {
       return
     }
-    previousSession = session
-    session = {
-      id: detail.id,
+    sessions.set(detail.id, {
       ptyId: args.capturedTransport.getPtyId()
-    }
+    })
   }
 
   const onSessionEnd = (event: Event): void => {
@@ -65,21 +61,11 @@ export function installTerminalImeCompositionRoute(args: {
       return
     }
     event.preventDefault()
-    const captured =
-      session?.id === detail.id
-        ? session
-        : previousSession?.id === detail.id
-          ? previousSession
-          : null
+    const captured = sessions.get(detail.id)
     if (!captured) {
       return
     }
-    if (session === captured) {
-      session = null
-    }
-    if (previousSession === captured) {
-      previousSession = null
-    }
+    sessions.delete(detail.id)
     if (
       disposed ||
       !detail.data ||
@@ -98,8 +84,7 @@ export function installTerminalImeCompositionRoute(args: {
   return {
     dispose: () => {
       disposed = true
-      session = null
-      previousSession = null
+      sessions.clear()
       terminalElement.removeEventListener(XTERM_COMPOSITION_SESSION_START_EVENT, onSessionStart)
       terminalElement.removeEventListener(XTERM_COMPOSITION_SESSION_END_EVENT, onSessionEnd)
     }
