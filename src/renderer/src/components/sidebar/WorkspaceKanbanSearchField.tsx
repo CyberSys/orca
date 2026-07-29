@@ -7,9 +7,10 @@ import { translate } from '@/i18n/i18n'
 const ANNOUNCE_DEBOUNCE_MS = 400
 // Why: the counter overlays the input, so its width has to be reserved rather
 // than guessed — a fixed reserve overlaps typed text once counts reach 3 digits.
-// Safe over-estimates at text-[10px] tabular-nums, where '/' and ' ' are narrower.
+// `ch` keeps that reserve font-relative across platforms: it measures the input's
+// own 12px font while the counter renders at 10px tabular-nums, so digits always
+// over-reserve and '/' and ' ' are narrower still.
 const CLEAR_BUTTON_RESERVE_PX = 32
-const COUNTER_CHAR_PX = 6
 const COUNTER_GAP_PX = 4
 
 type WorkspaceKanbanSearchFieldProps = {
@@ -22,6 +23,13 @@ type WorkspaceKanbanSearchFieldProps = {
   onClear: () => void
   /** Escape in an empty field has nothing local to cancel, so it dismisses the board. */
   onClose: () => void
+}
+
+function counterReserve(counterText: string | null): string {
+  if (!counterText) {
+    return `${CLEAR_BUTTON_RESERVE_PX}px`
+  }
+  return `calc(${CLEAR_BUTTON_RESERVE_PX + COUNTER_GAP_PX}px + ${counterText.length}ch)`
 }
 
 function formatAnnouncement(matchCount: number, totalCount: number): string {
@@ -80,15 +88,7 @@ export default function WorkspaceKanbanSearchField({
           'Search workspaces'
         )}
         className="h-7 border-worktree-sidebar-border bg-background pl-7 text-xs"
-        style={
-          hasText
-            ? {
-                paddingRight:
-                  CLEAR_BUTTON_RESERVE_PX +
-                  (counterText ? counterText.length * COUNTER_CHAR_PX + COUNTER_GAP_PX : 0)
-              }
-            : undefined
-        }
+        style={hasText ? { paddingRight: counterReserve(counterText) } : undefined}
         onChange={(event) => onQueryChange(event.target.value)}
         onKeyDown={(event) => {
           // Why: useWorkspaceBoardPanel defers Escape to board text fields, so

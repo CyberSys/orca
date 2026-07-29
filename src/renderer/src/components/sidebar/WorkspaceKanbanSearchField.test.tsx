@@ -172,16 +172,16 @@ describe('WorkspaceKanbanSearchField', () => {
     expect(document.activeElement).toBe(input())
   })
 
-  it('reserves counter width so a large count cannot overlap typed text', () => {
+  it('reserves counter width in font-relative units so a large count cannot overlap typed text', () => {
+    // '298 / 1024' is 10 characters; a fixed reserve would let it overlap.
     renderField({ query: 'orca', matchCount: 298, totalCount: 1024 })
-    const wide = Number.parseFloat(input().style.paddingRight)
+    expect(input().style.paddingRight).toContain('10ch')
 
     renderField({ query: 'orca', matchCount: 3, totalCount: 9 })
-    const narrow = Number.parseFloat(input().style.paddingRight)
+    expect(input().style.paddingRight).toContain('5ch')
 
-    expect(wide).toBeGreaterThan(narrow)
-    // '298 / 1024' is 10 characters, so the reserve must clear the clear button
-    // plus the full counter rather than a fixed 64px guess.
-    expect(wide).toBeGreaterThanOrEqual(32 + 10 * 6)
+    // A non-filtering query shows no counter, so it reserves only the button.
+    renderField({ query: '   ', isFiltering: false })
+    expect(input().style.paddingRight).not.toContain('ch')
   })
 })

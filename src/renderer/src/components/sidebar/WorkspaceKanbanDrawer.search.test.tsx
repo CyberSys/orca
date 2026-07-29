@@ -3,6 +3,7 @@
 import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WORKTREE_PALETTE_QUERY_MAX_BYTES } from '@/lib/worktree-palette-query-bounds'
 import { useAppStore } from '@/store'
 import type { Repo, Worktree, WorktreeMeta } from '../../../../shared/types'
 import WorkspaceKanbanDrawer from './WorkspaceKanbanDrawer'
@@ -372,6 +373,19 @@ describe('WorkspaceKanbanDrawer search', () => {
 
     expect(headerState.current).toMatchObject({ isFiltering: false, matchCount: 5, totalCount: 5 })
     expect(laneIds('todo')).toHaveLength(4)
+  })
+
+  it('leaves the whole board unfiltered for an over-bound query', () => {
+    // Why: searchWorktrees returns [] past the byte bound, which would read as
+    // "matched nothing" and blank every lane on a paste accident.
+    renderDrawer()
+
+    typeQuery('x'.repeat(WORKTREE_PALETTE_QUERY_MAX_BYTES + 1))
+
+    expect(laneIds('todo')).toHaveLength(4)
+    expect(laneIds('in-review')).toEqual([omega.id])
+    expect(gridState.current?.hasQuery).toBe(false)
+    expect(headerState.current).toMatchObject({ isFiltering: false, matchCount: 5, totalCount: 5 })
   })
 
   it('ranks a drop into a filtered lane against the full lane, not the rendered one', () => {

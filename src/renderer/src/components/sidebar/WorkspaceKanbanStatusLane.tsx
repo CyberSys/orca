@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 import { Plus } from 'lucide-react'
 import type {
   Repo,
@@ -80,6 +80,17 @@ export default function WorkspaceKanbanStatusLane({
   // only a lane whose cards were filtered away has anything to say about matches.
   const laneTotalCount = totalCount ?? items.length
   const isFiltered = hasQuery && laneTotalCount > 0
+  // Why: this joins every id in the lane, so it must not rerun on unrelated
+  // board re-renders — at a few hundred cards it is ~25KB of string per pass.
+  const laneFullIdsAttribute = useMemo(() => {
+    if (!hasQuery) {
+      return undefined
+    }
+    return (
+      serializeWorkspaceLaneFullIds(fullWorktreeIds ?? items.map((worktree) => worktree.id)) ??
+      undefined
+    )
+  }, [fullWorktreeIds, hasQuery, items])
   const createTooltip = canCreateWorktree
     ? `New workspace in ${status.label}`
     : 'Add a project to create workspaces'
@@ -105,11 +116,7 @@ export default function WorkspaceKanbanStatusLane({
       // where a search query would otherwise leave them only the rendered cards.
       // Unfiltered lanes stay off this channel — the rendered scan already is the
       // full lane, and every board id in an attribute is real DOM weight.
-      data-workspace-lane-full-ids={
-        hasQuery
-          ? serializeWorkspaceLaneFullIds(fullWorktreeIds ?? items.map((worktree) => worktree.id))
-          : undefined
-      }
+      data-workspace-lane-full-ids={laneFullIdsAttribute}
       data-contextual-tour-target={
         status.id === 'completed' ? 'workspace-board-done-lane' : undefined
       }

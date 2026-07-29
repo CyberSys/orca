@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { resolveFullLaneDropIndex } from './workspace-kanban-filtered-drop-index'
+import {
+  parseWorkspaceLaneFullIds,
+  resolveFullLaneDropIndex,
+  serializeWorkspaceLaneFullIds
+} from './workspace-kanban-filtered-drop-index'
 
 const FULL = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
 
@@ -72,6 +76,18 @@ describe('resolveFullLaneDropIndex', () => {
     ).toBe(FULL.length)
   })
 
+  it('still translates when a stale lane has the same length but different members', () => {
+    // Why: a length-only guard would take the identity branch here and skip
+    // translation, landing the card at an index that means nothing in FULL.
+    expect(
+      resolveFullLaneDropIndex({
+        fullLaneIds: ['a', 'b', 'c'],
+        renderedIds: ['a', 'x', 'c'],
+        filteredDropIndex: 1
+      })
+    ).toBe(3)
+  })
+
   it('clamps out-of-range filtered indices to the first and last branches', () => {
     expect(
       resolveFullLaneDropIndex({
@@ -87,5 +103,27 @@ describe('resolveFullLaneDropIndex', () => {
         filteredDropIndex: 99
       })
     ).toBe(5)
+  })
+})
+
+describe('workspace lane full-id channel', () => {
+  it('round-trips lane membership through the delimiter', () => {
+    const ids = ['repo-a::/Users/dev/projects/orca/main', 'repo-b::C:\\src\\atlas, v2']
+    const serialized = serializeWorkspaceLaneFullIds(ids)
+
+    expect(serialized).not.toBeNull()
+    expect(parseWorkspaceLaneFullIds(serialized ?? undefined)).toEqual(ids)
+  })
+
+  it('distinguishes an unpublished lane from an empty one', () => {
+    expect(parseWorkspaceLaneFullIds(undefined)).toBeNull()
+    expect(parseWorkspaceLaneFullIds('')).toEqual([])
+    expect(serializeWorkspaceLaneFullIds([])).toBe('')
+  })
+
+  it('refuses to publish a lane whose ids would split on the delimiter', () => {
+    // Why: a newline is legal in a POSIX path. Publishing would invent phantom
+    // lane members; declining makes the reader fall back to scanning cards.
+    expect(serializeWorkspaceLaneFullIds(['repo-a::/Users/dev/we\nird', 'repo-a::/ok'])).toBeNull()
   })
 })

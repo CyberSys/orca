@@ -2,7 +2,16 @@
 // separator in the `data-workspace-lane-full-ids` channel; newlines are not.
 export const WORKSPACE_LANE_FULL_IDS_DELIMITER = '\n'
 
-export function serializeWorkspaceLaneFullIds(worktreeIds: readonly string[]): string {
+/**
+ * Returns `null` when the lane cannot be represented on this channel, so the
+ * caller omits the attribute and the reader falls back to scanning cards.
+ * Why: a newline is legal in a POSIX path, and joining over one would silently
+ * split a single id into two phantom lane members.
+ */
+export function serializeWorkspaceLaneFullIds(worktreeIds: readonly string[]): string | null {
+  if (worktreeIds.some((worktreeId) => worktreeId.includes(WORKSPACE_LANE_FULL_IDS_DELIMITER))) {
+    return null
+  }
   return worktreeIds.join(WORKSPACE_LANE_FULL_IDS_DELIMITER)
 }
 
@@ -29,7 +38,9 @@ export function resolveFullLaneDropIndex(args: {
   filteredDropIndex: number
 }): number {
   const { fullLaneIds, renderedIds, filteredDropIndex } = args
-  if (renderedIds.length === fullLaneIds.length) {
+  // Why: equal lengths alone would take this branch for a stale DOM lane that
+  // holds the same card count but different membership, skipping translation.
+  if (isSameLane(fullLaneIds, renderedIds)) {
     return filteredDropIndex
   }
   if (renderedIds.length === 0) {
@@ -44,6 +55,13 @@ export function resolveFullLaneDropIndex(args: {
     return Math.min(fullLaneIds.length, lastIndex + 1)
   }
   return indexInFullLane(fullLaneIds, renderedIds[filteredDropIndex]!)
+}
+
+function isSameLane(fullLaneIds: readonly string[], renderedIds: readonly string[]): boolean {
+  return (
+    renderedIds.length === fullLaneIds.length &&
+    renderedIds.every((worktreeId, index) => worktreeId === fullLaneIds[index])
+  )
 }
 
 // Why: a rendered id missing from the full lane is a stale-DOM race. Returning

@@ -80,6 +80,29 @@ describe('matchWorkspaceBoardWorktrees', () => {
     expect(match(worktrees, 'SEARCH')).toEqual(new Set(['a']))
   })
 
+  it('treats regex metacharacters as literal text', () => {
+    // Why: matching is indexOf, never RegExp. This pins that, so swapping in a
+    // regex later fails here instead of silently changing what users can search.
+    const worktrees = [
+      worktree({ id: 'literal', displayName: 'feat.*fix' }),
+      worktree({ id: 'would-match-as-regex', displayName: 'featANYfix' })
+    ]
+
+    expect(match(worktrees, 'feat.*fix')).toEqual(new Set(['literal']))
+    expect(match(worktrees, '(')).toEqual(new Set())
+  })
+
+  it('matches non-ASCII display names and comments', () => {
+    const worktrees = [
+      worktree({ id: 'cjk', displayName: '検索フィールド' }),
+      worktree({ id: 'accent', displayName: 'Other', comment: 'Añadir búsqueda' }),
+      worktree({ id: 'miss', displayName: 'Other' })
+    ]
+
+    expect(match(worktrees, 'フィールド')).toEqual(new Set(['cjk']))
+    expect(match(worktrees, 'BÚSQUEDA')).toEqual(new Set(['accent']))
+  })
+
   it('treats an over-bound query as no filtering rather than zero matches', () => {
     const worktrees = [worktree({ id: 'a', displayName: 'Search field' })]
 
