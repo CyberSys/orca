@@ -53,6 +53,19 @@ function click(worktreeId: string, shiftKey = false): void {
   })
 }
 
+function toggleClick(worktreeId: string): void {
+  act(() => {
+    selection.updateSelectionForGesture(
+      {
+        metaKey: navigator.userAgent.includes('Mac'),
+        ctrlKey: !navigator.userAgent.includes('Mac'),
+        shiftKey: false
+      } as React.MouseEvent<HTMLElement>,
+      worktreeId
+    )
+  })
+}
+
 function selectedIds(): string[] {
   return [...selection.selectedWorktreeIds].sort()
 }
@@ -100,6 +113,47 @@ describe('useWorkspaceKanbanSelection', () => {
 
     renderSelection()
     expect(selectedIds()).toEqual(['alpha', 'beta'])
+  })
+
+  it('extends the range from a visible card when a search hides the anchor', () => {
+    // Anchor lands on delta, then a query hides only delta.
+    renderSelection()
+    click(alpha.id)
+    toggleClick(beta.id)
+    toggleClick(delta.id)
+    expect(selectedIds()).toEqual(['alpha', 'beta', 'delta'])
+
+    renderSelection([alpha, beta, gamma])
+    click(gamma.id, true)
+
+    // Without a rendered anchor this collapsed to just gamma, dropping the
+    // still-visible alpha and beta along with the hidden delta.
+    expect(selectedIds()).toEqual(['alpha', 'beta', 'delta', 'gamma'])
+  })
+
+  it('leaves a hidden selection intact when a range replaces the visible one', () => {
+    // Anchor stays on the rendered alpha, so this isolates the range replace
+    // from the re-anchoring above. A plain click still clears everything.
+    renderSelection()
+    click(delta.id)
+    toggleClick(alpha.id)
+    expect(selectedIds()).toEqual(['alpha', 'delta'])
+
+    renderSelection([alpha, beta, gamma])
+    click(gamma.id, true)
+
+    expect(selectedIds()).toEqual(['alpha', 'beta', 'delta', 'gamma'])
+  })
+
+  it('lets a plain click clear a selection the search is hiding', () => {
+    renderSelection()
+    click(alpha.id)
+    toggleClick(delta.id)
+
+    renderSelection([alpha, beta, gamma])
+    click(beta.id)
+
+    expect(selectedIds()).toEqual(['beta'])
   })
 
   it('still prunes ids that leave the board entirely', () => {

@@ -8,6 +8,33 @@ import {
   updateWorktreeSelection
 } from './worktree-multi-selection'
 
+/** Returns the first still-rendered selected id, or `null` if the anchor is fine. */
+function resolveRenderedAnchorId(
+  renderedWorktreeIds: readonly string[],
+  selectedWorktreeIds: ReadonlySet<string>,
+  anchorId: string
+): string | null {
+  if (renderedWorktreeIds.includes(anchorId)) {
+    return null
+  }
+  return renderedWorktreeIds.find((id) => selectedWorktreeIds.has(id)) ?? null
+}
+
+function withHiddenSelections(
+  nextSelectedIds: ReadonlySet<string>,
+  previousSelectedIds: ReadonlySet<string>,
+  renderedWorktreeIds: readonly string[]
+): Set<string> {
+  const rendered = new Set(renderedWorktreeIds)
+  const merged = new Set(nextSelectedIds)
+  for (const id of previousSelectedIds) {
+    if (!rendered.has(id)) {
+      merged.add(id)
+    }
+  }
+  return merged
+}
+
 // Why: board search hides cards without dropping them from the board, so range
 // and area gestures index the rendered subset while pruning still spans the
 // whole board — otherwise a query would silently discard hidden selections.
@@ -53,14 +80,30 @@ export function useWorkspaceKanbanSelection(
   const updateSelectionForGesture = useCallback(
     (event: React.MouseEvent<HTMLElement>, worktreeId: string): boolean => {
       const intent = getWorktreeSelectionIntent(event, navigator.userAgent.includes('Mac'))
+      // Why: a search can hide the anchor while leaving the rest of the
+      // selection on screen. updateWorktreeSelection reads an anchor missing
+      // from visibleIds as "no anchor" and collapses the range to the click,
+      // so re-anchor onto the first still-rendered selected card instead.
+      const anchorId =
+        intent === 'range' && selectionAnchorId !== null
+          ? (resolveRenderedAnchorId(renderedWorktreeIds, selectedWorktreeIds, selectionAnchorId) ??
+            selectionAnchorId)
+          : selectionAnchorId
       const result = updateWorktreeSelection({
         visibleIds: renderedWorktreeIds,
         previousSelectedIds: selectedWorktreeIds,
-        previousAnchorId: selectionAnchorId,
+        previousAnchorId: anchorId,
         targetId: worktreeId,
         intent
       })
-      setSelectedWorktreeIds(result.selectedIds)
+      // Why: a range replaces the selection with what it spans, which spans only
+      // rendered cards. Selections the query is hiding are not part of the
+      // gesture and must survive it.
+      setSelectedWorktreeIds(
+        intent === 'range'
+          ? withHiddenSelections(result.selectedIds, selectedWorktreeIds, renderedWorktreeIds)
+          : result.selectedIds
+      )
       setSelectionAnchorId(result.anchorId)
       return intent !== 'replace'
     },

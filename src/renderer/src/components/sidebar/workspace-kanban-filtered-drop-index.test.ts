@@ -50,28 +50,43 @@ describe('resolveFullLaneDropIndex', () => {
     ).toBe(4)
   })
 
-  it('handles a lane filtered to zero cards', () => {
+  it('appends into a lane whose cards are all filtered away', () => {
+    // Why: an empty rendered lane reports drop index 0 for every pointer
+    // position, so honouring it would always prepend. The document-drop path
+    // appends for the same gesture, and these must not disagree.
     expect(
       resolveFullLaneDropIndex({ fullLaneIds: FULL, renderedIds: [], filteredDropIndex: 0 })
-    ).toBe(0)
+    ).toBe(FULL.length)
     expect(
       resolveFullLaneDropIndex({ fullLaneIds: FULL, renderedIds: [], filteredDropIndex: 3 })
     ).toBe(FULL.length)
+    expect(
+      resolveFullLaneDropIndex({ fullLaneIds: [], renderedIds: [], filteredDropIndex: 0 })
+    ).toBe(0)
   })
 
-  it('falls back to the lane end when a rendered id is missing from the full lane', () => {
+  it('falls back toward the end of the lane the branch was aiming at', () => {
+    // A head drop resolves to the head, not the tail — the opposite fallback
+    // would land a card at the bottom of a lane the user dropped it on top of.
     expect(
       resolveFullLaneDropIndex({
         fullLaneIds: FULL,
         renderedIds: ['stale', 'e'],
         filteredDropIndex: 0
       })
-    ).toBe(FULL.length)
+    ).toBe(0)
     expect(
       resolveFullLaneDropIndex({
         fullLaneIds: FULL,
         renderedIds: ['b', 'stale'],
         filteredDropIndex: 2
+      })
+    ).toBe(FULL.length)
+    expect(
+      resolveFullLaneDropIndex({
+        fullLaneIds: FULL,
+        renderedIds: ['b', 'stale', 'g'],
+        filteredDropIndex: 1
       })
     ).toBe(FULL.length)
   })
@@ -121,9 +136,13 @@ describe('workspace lane full-id channel', () => {
     expect(serializeWorkspaceLaneFullIds([])).toBe('')
   })
 
-  it('refuses to publish a lane whose ids would split on the delimiter', () => {
-    // Why: a newline is legal in a POSIX path. Publishing would invent phantom
-    // lane members; declining makes the reader fall back to scanning cards.
-    expect(serializeWorkspaceLaneFullIds(['repo-a::/Users/dev/we\nird', 'repo-a::/ok'])).toBeNull()
+  it('survives ids holding every character a path can legally contain', () => {
+    // Why: a POSIX path may hold any byte but NUL and '/', so a newline, comma
+    // or colon delimiter would split one id into phantom lane members. Dropping
+    // the channel is not an escape hatch either — under a query the reader
+    // would fall back to the DOM and see only the matched cards.
+    const ids = ['repo-a::/Users/dev/we\nird, one: two', 'repo-b::C:\\src\\atlas']
+
+    expect(parseWorkspaceLaneFullIds(serializeWorkspaceLaneFullIds(ids) ?? undefined)).toEqual(ids)
   })
 })

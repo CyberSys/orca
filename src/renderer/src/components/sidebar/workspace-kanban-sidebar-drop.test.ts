@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceStatusDefinition, Worktree } from '../../../../shared/types'
+import { serializeWorkspaceLaneFullIds } from './workspace-kanban-filtered-drop-index'
 import {
   buildWorkspaceKanbanSidebarDropUpdates,
   clearWorkspaceKanbanSidebarDropTargetVisual,
@@ -250,7 +251,8 @@ describe('workspace kanban sidebar drop DOM bridge', () => {
 
   it('prefers the published full lane membership over the rendered card scan', () => {
     const { lane } = appendBoard()
-    lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
+    lane.dataset.workspaceLaneFullIds =
+      serializeWorkspaceLaneFullIds(['doing-x', 'doing-a', 'doing-y', 'doing-b']) ?? ''
     setElementFromPoint(lane)
 
     expect(getWorkspaceKanbanSidebarDropGroups()).toEqual([
@@ -260,7 +262,8 @@ describe('workspace kanban sidebar drop DOM bridge', () => {
 
   it('keeps the tracked drop target in the rendered index space of the indicator', () => {
     const { lane } = appendBoard()
-    lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
+    lane.dataset.workspaceLaneFullIds =
+      serializeWorkspaceLaneFullIds(['doing-x', 'doing-a', 'doing-y', 'doing-b']) ?? ''
     setElementFromPoint(lane)
 
     expect(getWorkspaceKanbanSidebarDropTarget(24, 60)).toMatchObject({
@@ -271,7 +274,8 @@ describe('workspace kanban sidebar drop DOM bridge', () => {
 
   it('translates a rendered drop index onto the full lane at the commit boundary', () => {
     const { lane } = appendBoard()
-    lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
+    lane.dataset.workspaceLaneFullIds =
+      serializeWorkspaceLaneFullIds(['doing-x', 'doing-a', 'doing-y', 'doing-b']) ?? ''
     setElementFromPoint(lane)
 
     // Rendered index 1 means "before doing-b", which is index 3 in the full lane.

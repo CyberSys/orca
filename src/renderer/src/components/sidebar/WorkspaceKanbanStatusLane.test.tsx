@@ -4,6 +4,7 @@ import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Repo, Worktree } from '../../../../shared/types'
+import { serializeWorkspaceLaneFullIds } from './workspace-kanban-filtered-drop-index'
 import WorkspaceKanbanStatusLane from './WorkspaceKanbanStatusLane'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -127,7 +128,7 @@ describe('WorkspaceKanbanStatusLane', () => {
       fullWorktreeIds: ['a', 'b', 'c']
     })
 
-    expect(lane().dataset.workspaceLaneFullIds).toBe('a\nb\nc')
+    expect(lane().dataset.workspaceLaneFullIds).toBe(serializeWorkspaceLaneFullIds(['a', 'b', 'c']))
     expect(container.querySelectorAll('[data-workspace-board-card-id]')).toHaveLength(1)
   })
 
