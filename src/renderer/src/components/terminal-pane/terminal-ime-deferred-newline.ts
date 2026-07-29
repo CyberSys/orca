@@ -60,6 +60,40 @@ export type TerminalImeEnterIdentity = Pick<KeyboardEvent, 'code' | 'timeStamp'>
 
 export type TerminalImeModifiedEnterKind = 'shift' | 'ctrl'
 
+export type TerminalImeModifiedEnterChord = TerminalImeEnterIdentity & {
+  kind: TerminalImeModifiedEnterKind
+}
+
+export type TerminalImeModifiedEnterChordOwner = {
+  claim: (chord: TerminalImeModifiedEnterChord) => boolean
+  absorb: (chord: TerminalImeModifiedEnterChord) => boolean
+  release: (chord: TerminalImeModifiedEnterChord) => void
+  clear: () => void
+}
+
+export function createTerminalImeModifiedEnterChordOwner(): TerminalImeModifiedEnterChordOwner {
+  let activeKind: TerminalImeModifiedEnterKind | null = null
+
+  return {
+    claim: ({ kind }) => {
+      if (activeKind !== null) {
+        return false
+      }
+      activeKind = kind
+      return true
+    },
+    absorb: ({ kind }) => activeKind === kind,
+    release: ({ kind }) => {
+      if (activeKind === kind) {
+        activeKind = null
+      }
+    },
+    clear: () => {
+      activeKind = null
+    }
+  }
+}
+
 export function getTerminalImeModifiedEnterKind(
   event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>
 ): TerminalImeModifiedEnterKind | null {

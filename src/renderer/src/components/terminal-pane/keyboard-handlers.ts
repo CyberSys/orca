@@ -11,6 +11,7 @@ import type { MacOptionAsAlt } from './terminal-shortcut-policy'
 import { createTerminalNativeOnlyShortcutTracker } from './terminal-native-only-shortcut'
 import {
   createTerminalImeDeferredNewlineSender,
+  createTerminalImeModifiedEnterChordOwner,
   getTerminalImeModifiedEnterKind,
   isTerminalImeEnterKeyUp,
   isTerminalImeProcessEnter
@@ -275,9 +276,13 @@ export function useTerminalKeyboardShortcuts({
     // location from its own keydown event and clear it on keyup.
     let optionKeyLocation = 0
     let activeImeEnterModifier: ReturnType<typeof getTerminalImeModifiedEnterKind> = null
-    let handledImeModifiedEnterKeyDown: ReturnType<typeof getTerminalImeModifiedEnterKind> = null
     const nativeOnlyShortcutTracker = createTerminalNativeOnlyShortcutTracker()
     const deferredNewlineSender = createTerminalImeDeferredNewlineSender()
+    const modifiedEnterChordOwner = createTerminalImeModifiedEnterChordOwner()
+    const getModifiedEnterChord = (event: KeyboardEvent) => {
+      const kind = getTerminalImeModifiedEnterKind(event) ?? activeImeEnterModifier
+      return kind ? { kind, code: event.code, timeStamp: event.timeStamp } : null
+    }
     const onModifierDown = (e: KeyboardEvent): void => {
       if (e.key === 'Alt') {
         optionKeyLocation = e.location
@@ -425,11 +430,13 @@ export function useTerminalKeyboardShortcuts({
         return
       }
 
+      const modifiedEnterChord = isWindows ? getModifiedEnterChord(e) : null
       if (
         e.key === 'Enter' &&
         e.keyCode === 13 &&
         !e.isComposing &&
-        deferredNewlineSender.absorbRedispatchedEnter(e)
+        ((modifiedEnterChord && modifiedEnterChordOwner.absorb(modifiedEnterChord)) ||
+          deferredNewlineSender.absorbRedispatchedEnter(e))
       ) {
         // Chromium can drop the modifier when re-dispatching the committing Enter.
         e.preventDefault()
@@ -515,7 +522,10 @@ export function useTerminalKeyboardShortcuts({
         const sendResolvedInput = createCapturedInputSender(pane, action.data)
         if ((e.isComposing || hasPendingImeComposition) && (e.key === 'Enter' || imeProcessEnter)) {
           if (isWindows) {
-            handledImeModifiedEnterKeyDown = getTerminalImeModifiedEnterKind(e)
+            const chord = getModifiedEnterChord(e)
+            if (chord && !modifiedEnterChordOwner.claim(chord)) {
+              return
+            }
           }
           deferredNewlineSender.defer(e, pane.terminal.element, sendResolvedInput)
           return
@@ -719,7 +729,9 @@ export function useTerminalKeyboardShortcuts({
         (e.key === 'Shift' && activeImeEnterModifier === 'shift') ||
         (e.key === 'Control' && activeImeEnterModifier === 'ctrl')
       ) {
+        const kind = activeImeEnterModifier
         activeImeEnterModifier = null
+        modifiedEnterChordOwner.release({ kind, code: e.code, timeStamp: e.timeStamp })
       }
       if (e.key !== 'Enter') {
         return
@@ -727,8 +739,9 @@ export function useTerminalKeyboardShortcuts({
 
       const modifiedEnterKind = getTerminalImeModifiedEnterKind(e) ?? activeImeEnterModifier
       if (isWindows && modifiedEnterKind && isTerminalImeEnterKeyUp(e)) {
-        if (handledImeModifiedEnterKeyDown === modifiedEnterKind) {
-          handledImeModifiedEnterKeyDown = null
+        const chord = { kind: modifiedEnterKind, code: e.code, timeStamp: e.timeStamp }
+        if (modifiedEnterChordOwner.absorb(chord)) {
+          modifiedEnterChordOwner.release(chord)
           e.preventDefault()
           e.stopImmediatePropagation()
           deferredNewlineSender.releaseRedispatchedEnter(e)
@@ -763,7 +776,13 @@ export function useTerminalKeyboardShortcuts({
         }
       }
 
-      handledImeModifiedEnterKeyDown = null
+      if (modifiedEnterKind) {
+        modifiedEnterChordOwner.release({
+          kind: modifiedEnterKind,
+          code: e.code,
+          timeStamp: e.timeStamp
+        })
+      }
       deferredNewlineSender.releaseRedispatchedEnter(e)
     }
 
@@ -791,7 +810,7 @@ export function useTerminalKeyboardShortcuts({
     const onNativeOnlyBlur = (): void => {
       nativeOnlyShortcutTracker.clear()
       activeImeEnterModifier = null
-      handledImeModifiedEnterKeyDown = null
+      modifiedEnterChordOwner.clear()
       deferredNewlineSender.clearRedispatchedEnters()
     }
 
@@ -803,6 +822,7 @@ export function useTerminalKeyboardShortcuts({
     window.addEventListener('beforeinput', onNativeOnlyBeforeInput, { capture: true })
     window.addEventListener('blur', onNativeOnlyBlur)
     return () => {
+      modifiedEnterChordOwner.clear()
       deferredNewlineSender.clearRedispatchedEnters()
       window.removeEventListener('keydown', onModifierDown, { capture: true })
       window.removeEventListener('keyup', onKeyUp, { capture: true })

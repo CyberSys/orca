@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PtyTransport } from './pty-transport'
 import {
   createTerminalImeDeferredNewlineSender,
+  createTerminalImeModifiedEnterChordOwner,
   isTerminalImeEnterKeyUp,
   isTerminalImeProcessEnter,
   sendTerminalInputAfterComposition
@@ -266,6 +267,57 @@ describe('createTerminalImeDeferredNewlineSender', () => {
 
     sender.clearRedispatchedEnters()
     expect(sender.absorbRedispatchedEnter(enter(10))).toBe(false)
+  })
+})
+
+describe('createTerminalImeModifiedEnterChordOwner', () => {
+  const chord = (kind: 'shift' | 'ctrl', timeStamp: number, code = '') => ({
+    kind,
+    code,
+    timeStamp
+  })
+
+  it('owns one Windows Process sequence across changing timestamps and blank codes', () => {
+    const owner = createTerminalImeModifiedEnterChordOwner()
+    const defer = vi.fn()
+
+    for (const event of [chord('shift', 5035.8), chord('shift', 5036.9)]) {
+      if (owner.claim(event)) {
+        defer()
+      }
+    }
+
+    expect(defer).toHaveBeenCalledTimes(1)
+    expect(owner.absorb(chord('shift', 5037.9, 'Enter'))).toBe(true)
+  })
+
+  it('does not merge different modified Enter kinds into one chord', () => {
+    const owner = createTerminalImeModifiedEnterChordOwner()
+
+    expect(owner.claim(chord('shift', 10, 'Enter'))).toBe(true)
+    expect(owner.claim(chord('ctrl', 11, 'Enter'))).toBe(false)
+    expect(owner.absorb(chord('ctrl', 12, 'Enter'))).toBe(false)
+  })
+
+  it('releases at the physical key boundary so the next Enter is not consumed', () => {
+    const owner = createTerminalImeModifiedEnterChordOwner()
+
+    expect(owner.claim(chord('ctrl', 10))).toBe(true)
+    owner.release(chord('ctrl', 30, 'Enter'))
+
+    expect(owner.absorb(chord('ctrl', 40, 'Enter'))).toBe(false)
+    expect(owner.claim(chord('ctrl', 40, 'Enter'))).toBe(true)
+  })
+
+  it('ignores a mismatched release and clears lost keyup state explicitly', () => {
+    const owner = createTerminalImeModifiedEnterChordOwner()
+
+    expect(owner.claim(chord('shift', 10))).toBe(true)
+    owner.release(chord('ctrl', 20))
+    expect(owner.absorb(chord('shift', 30))).toBe(true)
+    owner.clear()
+
+    expect(owner.absorb(chord('shift', 40))).toBe(false)
   })
 })
 
