@@ -26,6 +26,7 @@ import type {
 } from '../shared/local-log-tail-types'
 import type { ReadClipboardTextOptions } from '../shared/clipboard-text'
 import type { AppIdentity } from '../shared/app-identity'
+import type { ReleaseChannel } from '../shared/release-channel'
 import type {
   HostQualifiedDetectedWorktreeResult,
   LegacyDetectedWorktreeRequest,
@@ -250,6 +251,7 @@ import type {
   StatsSummary,
   MemorySnapshot,
   TuiAgent,
+  ReleaseBuildListResult,
   UpdateCheckOptions,
   UpdateStatus,
   Worktree,
@@ -2649,6 +2651,7 @@ export type PreloadApi = {
     quitAndInstall: () => Promise<void>
     dismissNudge: () => Promise<void>
     dismissAvailableUpdate: () => Promise<void>
+    listBuilds: (channel: ReleaseChannel) => Promise<ReleaseBuildListResult>
     onStatus: (callback: (status: UpdateStatus) => void) => () => void
     onClearDismissal: (callback: () => void) => () => void
   }
