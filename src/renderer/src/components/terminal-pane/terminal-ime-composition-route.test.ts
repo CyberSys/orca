@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { PtyTransport } from './pty-transport'
 import {
+  hasPendingTerminalImeComposition,
   installTerminalImeCompositionRoute,
   XTERM_COMPOSITION_SESSION_END_EVENT,
   XTERM_COMPOSITION_SESSION_START_EVENT
@@ -103,11 +104,14 @@ describe('installTerminalImeCompositionRoute', () => {
     harness.start(1)
     harness.start(2)
     harness.start(3)
+    expect(hasPendingTerminalImeComposition(harness.element)).toBe(true)
     harness.end(1, '안')
     harness.end(2, '녕')
+    expect(hasPendingTerminalImeComposition(harness.element)).toBe(true)
     harness.end(3, '하')
 
     expect(harness.input.mock.calls).toEqual([['안'], ['녕'], ['하']])
+    expect(hasPendingTerminalImeComposition(harness.element)).toBe(false)
   })
 
   it('drops a commit after same-pane PTY replacement', () => {
@@ -139,6 +143,7 @@ describe('installTerminalImeCompositionRoute', () => {
 
       expect(harness.end(1, '한')).toBe(true)
       expect(harness.input).not.toHaveBeenCalled()
+      expect(hasPendingTerminalImeComposition(harness.element)).toBe(false)
     }
   )
 })

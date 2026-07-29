@@ -13,6 +13,23 @@ type CapturedCompositionSession = {
   ptyId: string | null
 }
 
+const pendingCompositionCountByElement = new WeakMap<HTMLElement, number>()
+
+function adjustPendingCompositionCount(terminalElement: HTMLElement, delta: number): void {
+  const count = Math.max(0, (pendingCompositionCountByElement.get(terminalElement) ?? 0) + delta)
+  if (count === 0) {
+    pendingCompositionCountByElement.delete(terminalElement)
+    return
+  }
+  pendingCompositionCountByElement.set(terminalElement, count)
+}
+
+export function hasPendingTerminalImeComposition(
+  terminalElement: HTMLElement | null | undefined
+): boolean {
+  return Boolean(terminalElement && pendingCompositionCountByElement.has(terminalElement))
+}
+
 function getCompositionDetail(event: Event): CompositionSessionDetail | null {
   if (!(event instanceof CustomEvent)) {
     return null
@@ -50,6 +67,9 @@ export function installTerminalImeCompositionRoute(args: {
     if (!detail || disposed) {
       return
     }
+    if (!sessions.has(detail.id)) {
+      adjustPendingCompositionCount(terminalElement, 1)
+    }
     sessions.set(detail.id, {
       ptyId: args.capturedTransport.getPtyId()
     })
@@ -66,6 +86,7 @@ export function installTerminalImeCompositionRoute(args: {
       return
     }
     sessions.delete(detail.id)
+    adjustPendingCompositionCount(terminalElement, -1)
     if (
       disposed ||
       !detail.data ||
@@ -84,6 +105,7 @@ export function installTerminalImeCompositionRoute(args: {
   return {
     dispose: () => {
       disposed = true
+      adjustPendingCompositionCount(terminalElement, -sessions.size)
       sessions.clear()
       terminalElement.removeEventListener(XTERM_COMPOSITION_SESSION_START_EVENT, onSessionStart)
       terminalElement.removeEventListener(XTERM_COMPOSITION_SESSION_END_EVENT, onSessionEnd)

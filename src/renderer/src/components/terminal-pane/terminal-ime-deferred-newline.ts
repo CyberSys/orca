@@ -1,3 +1,8 @@
+import {
+  hasPendingTerminalImeComposition,
+  XTERM_COMPOSITION_SESSION_END_EVENT
+} from './terminal-ime-composition-route'
+
 export const TERMINAL_IME_DEFERRED_NEWLINE_FALLBACK_MS = 200
 
 export function sendTerminalInputAfterComposition(
@@ -19,13 +24,24 @@ export function sendTerminalInputAfterComposition(
     }
     done = true
     terminalElement.removeEventListener('compositionend', onCompositionEnd)
+    terminalElement.removeEventListener(
+      XTERM_COMPOSITION_SESSION_END_EVENT,
+      onCompositionSessionEnd
+    )
     window.clearTimeout(fallbackTimer)
     // xterm flushes the committed glyph after compositionend.
     window.setTimeout(send, 0)
   }
 
-  const onCompositionEnd = (): void => finish()
+  const finishAfterPendingComposition = (): void => {
+    if (!hasPendingTerminalImeComposition(terminalElement)) {
+      finish()
+    }
+  }
+  const onCompositionEnd = (): void => finishAfterPendingComposition()
+  const onCompositionSessionEnd = (): void => finishAfterPendingComposition()
   terminalElement.addEventListener('compositionend', onCompositionEnd)
+  terminalElement.addEventListener(XTERM_COMPOSITION_SESSION_END_EVENT, onCompositionSessionEnd)
   const fallbackTimer = window.setTimeout(finish, fallbackMs)
 }
 
@@ -41,6 +57,34 @@ export type TerminalImeDeferredNewlineSender = {
 }
 
 export type TerminalImeEnterIdentity = Pick<KeyboardEvent, 'code' | 'timeStamp'>
+
+export type TerminalImeModifiedEnterKind = 'shift' | 'ctrl'
+
+export function getTerminalImeModifiedEnterKind(
+  event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>
+): TerminalImeModifiedEnterKind | null {
+  if (event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    return 'shift'
+  }
+  if (event.ctrlKey && !event.shiftKey && !event.metaKey && !event.altKey) {
+    return 'ctrl'
+  }
+  return null
+}
+
+export function isTerminalImeProcessEnter(
+  event: Pick<KeyboardEvent, 'key' | 'keyCode' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>
+): boolean {
+  return (
+    event.key === 'Process' &&
+    event.keyCode === 229 &&
+    getTerminalImeModifiedEnterKind(event) !== null
+  )
+}
+
+export function isTerminalImeEnterKeyUp(event: Pick<KeyboardEvent, 'key' | 'keyCode'>): boolean {
+  return event.key === 'Enter' && event.keyCode === 13
+}
 
 type DeferredNewlineState = {
   inFlightSends: number

@@ -1,9 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PtyTransport } from './pty-transport'
 import {
   createTerminalImeDeferredNewlineSender,
+  isTerminalImeEnterKeyUp,
+  isTerminalImeProcessEnter,
   sendTerminalInputAfterComposition
 } from './terminal-ime-deferred-newline'
+import {
+  installTerminalImeCompositionRoute,
+  XTERM_COMPOSITION_SESSION_END_EVENT,
+  XTERM_COMPOSITION_SESSION_START_EVENT
+} from './terminal-ime-composition-route'
 
 describe('sendTerminalInputAfterComposition', () => {
   beforeEach(() => {
@@ -36,6 +44,47 @@ describe('sendTerminalInputAfterComposition', () => {
     vi.runAllTimers()
 
     expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('finishes from the captured xterm transaction when deferral starts after compositionend', () => {
+    const el = document.createElement('div')
+    const send = vi.fn()
+
+    sendTerminalInputAfterComposition(el, send)
+    el.dispatchEvent(new CustomEvent(XTERM_COMPOSITION_SESSION_END_EVENT))
+    vi.advanceTimersByTime(0)
+
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for every overlapping captured xterm transaction', () => {
+    const el = document.createElement('div')
+    const send = vi.fn()
+    const terminal = { input: vi.fn() }
+    const transport = {
+      getPtyId: () => 'pty-1'
+    } as unknown as PtyTransport
+    const route = installTerminalImeCompositionRoute({
+      terminalElement: el,
+      terminal,
+      capturedTransport: transport,
+      getCurrentTransport: () => transport
+    })
+    const sessionEvent = (type: string, id: number) =>
+      new CustomEvent(type, { detail: { id, data: `commit-${id}` } })
+
+    el.dispatchEvent(sessionEvent(XTERM_COMPOSITION_SESSION_START_EVENT, 1))
+    el.dispatchEvent(sessionEvent(XTERM_COMPOSITION_SESSION_START_EVENT, 2))
+    sendTerminalInputAfterComposition(el, send)
+    el.dispatchEvent(sessionEvent(XTERM_COMPOSITION_SESSION_END_EVENT, 1))
+    vi.advanceTimersByTime(0)
+    expect(send).not.toHaveBeenCalled()
+
+    el.dispatchEvent(sessionEvent(XTERM_COMPOSITION_SESSION_END_EVENT, 2))
+    vi.advanceTimersByTime(0)
+    expect(send).toHaveBeenCalledTimes(1)
+
+    route.dispose()
   })
 
   it('sends only once and drops the listener after firing', () => {
@@ -217,5 +266,48 @@ describe('createTerminalImeDeferredNewlineSender', () => {
 
     sender.clearRedispatchedEnters()
     expect(sender.absorbRedispatchedEnter(enter(10))).toBe(false)
+  })
+})
+
+describe('isTerminalImeProcessEnter', () => {
+  const event = (overrides: Partial<KeyboardEvent> = {}) =>
+    ({
+      key: 'Process',
+      keyCode: 229,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: true,
+      ...overrides
+    }) as KeyboardEvent
+
+  it.each([{ shiftKey: true }, { shiftKey: false, ctrlKey: true }])(
+    'recognizes a Windows IME modifier Enter reported as Process',
+    (modifiers) => {
+      expect(isTerminalImeProcessEnter(event(modifiers))).toBe(true)
+    }
+  )
+
+  it.each([
+    { key: 'Enter' },
+    { keyCode: 13 },
+    { shiftKey: false },
+    { ctrlKey: true },
+    { altKey: true }
+  ])('rejects a non-IME or ambiguous Process key', (override) => {
+    expect(isTerminalImeProcessEnter(event(override))).toBe(false)
+  })
+})
+
+describe('isTerminalImeEnterKeyUp', () => {
+  it('recognizes the balancing Enter keyup when Chromium drops its modifier', () => {
+    expect(isTerminalImeEnterKeyUp({ key: 'Enter', keyCode: 13 })).toBe(true)
+  })
+
+  it.each([
+    { key: 'Process', keyCode: 13 },
+    { key: 'Enter', keyCode: 229 }
+  ])('rejects a non-Enter balancing event', (event) => {
+    expect(isTerminalImeEnterKeyUp(event)).toBe(false)
   })
 })
