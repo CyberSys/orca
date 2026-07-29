@@ -11,6 +11,7 @@ let container: HTMLDivElement
 let root: Root
 const onQueryChange = vi.fn()
 const onClear = vi.fn()
+const onClose = vi.fn()
 
 function renderField(props: {
   query: string
@@ -27,6 +28,7 @@ function renderField(props: {
         totalCount={props.totalCount ?? 0}
         onQueryChange={onQueryChange}
         onClear={onClear}
+        onClose={onClose}
       />
     )
   })
@@ -134,12 +136,12 @@ describe('WorkspaceKanbanSearchField', () => {
     expect(liveRegion().textContent).toBe('')
   })
 
-  it('clears a non-empty query on Escape and leaves an empty one to the drawer', () => {
+  it('clears a non-empty query on Escape and closes the board on an empty one', () => {
+    // Why: useWorkspaceBoardPanel's Escape listener is capture-phase on
+    // document, so it runs before this handler and stopPropagation cannot
+    // reach it. The panel defers to board text fields instead, which makes
+    // this field solely responsible for both Escape outcomes.
     renderField({ query: 'orca', matchCount: 3, totalCount: 12 })
-    // Why: React roots at `container`, so only a listener above it can observe
-    // whether the field let Escape through.
-    const bubbled = vi.fn()
-    document.body.addEventListener('keydown', bubbled)
 
     act(() => {
       input().dispatchEvent(
@@ -147,7 +149,7 @@ describe('WorkspaceKanbanSearchField', () => {
       )
     })
     expect(onClear).toHaveBeenCalledOnce()
-    expect(bubbled).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
 
     renderField({ query: '' })
     act(() => {
@@ -156,8 +158,30 @@ describe('WorkspaceKanbanSearchField', () => {
       )
     })
     expect(onClear).toHaveBeenCalledOnce()
-    expect(bubbled).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
 
-    document.body.removeEventListener('keydown', bubbled)
+  it('keeps focus in the field after the clear button unmounts itself', () => {
+    renderField({ query: 'orca', matchCount: 3, totalCount: 12 })
+    act(() => {
+      input().focus()
+      clearButton()?.click()
+    })
+
+    expect(onClear).toHaveBeenCalledOnce()
+    expect(document.activeElement).toBe(input())
+  })
+
+  it('reserves counter width so a large count cannot overlap typed text', () => {
+    renderField({ query: 'orca', matchCount: 298, totalCount: 1024 })
+    const wide = Number.parseFloat(input().style.paddingRight)
+
+    renderField({ query: 'orca', matchCount: 3, totalCount: 9 })
+    const narrow = Number.parseFloat(input().style.paddingRight)
+
+    expect(wide).toBeGreaterThan(narrow)
+    // '298 / 1024' is 10 characters, so the reserve must clear the clear button
+    // plus the full counter rather than a fixed 64px guess.
+    expect(wide).toBeGreaterThanOrEqual(32 + 10 * 6)
   })
 })

@@ -79,6 +79,7 @@ export default function WorkspaceKanbanDrawerHeader({
             totalCount={totalCount}
             onQueryChange={onQueryChange}
             onClear={onClearQuery}
+            onClose={onClose}
           />
         </div>
         <SheetDescription className="sr-only">
