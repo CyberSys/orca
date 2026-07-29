@@ -11,12 +11,14 @@ const ANNOUNCE_DEBOUNCE_MS = 400
 // own 12px font while the counter renders at 10px tabular-nums, so digits always
 // over-reserve and '/' and ' ' are narrower still.
 const CLEAR_BUTTON_RESERVE_PX = 32
-const COUNTER_GAP_PX = 4
+const OVERLAY_GAP_PX = 4
 
 type WorkspaceKanbanSearchFieldProps = {
   query: string
   /** False for text that never narrows the board (whitespace-only, over-bound). */
   isFiltering: boolean
+  /** True when the text was discarded for length, which needs saying out loud. */
+  isTooLarge: boolean
   matchCount: number
   totalCount: number
   onQueryChange: (query: string) => void
@@ -25,11 +27,11 @@ type WorkspaceKanbanSearchFieldProps = {
   onClose: () => void
 }
 
-function counterReserve(counterText: string | null): string {
-  if (!counterText) {
+function overlayReserve(overlayText: string | null): string {
+  if (!overlayText) {
     return `${CLEAR_BUTTON_RESERVE_PX}px`
   }
-  return `calc(${CLEAR_BUTTON_RESERVE_PX + COUNTER_GAP_PX}px + ${counterText.length}ch)`
+  return `calc(${CLEAR_BUTTON_RESERVE_PX + OVERLAY_GAP_PX}px + ${overlayText.length}ch)`
 }
 
 function formatAnnouncement(matchCount: number, totalCount: number): string {
@@ -48,6 +50,7 @@ function formatAnnouncement(matchCount: number, totalCount: number): string {
 export default function WorkspaceKanbanSearchField({
   query,
   isFiltering,
+  isTooLarge,
   matchCount,
   totalCount,
   onQueryChange,
@@ -59,9 +62,24 @@ export default function WorkspaceKanbanSearchField({
   const inputRef = useRef<HTMLInputElement>(null)
   const [announcement, setAnnouncement] = useState('')
 
+  const tooLargeMessage = isTooLarge
+    ? translate(
+        'auto.components.sidebar.WorkspaceKanbanSearchField.7f1c2e94a5',
+        'Search text is too long — the board is unfiltered'
+      )
+    : null
+  const tooLargeLabel = isTooLarge
+    ? translate('auto.components.sidebar.WorkspaceKanbanSearchField.9a4d0f6b21', 'Too long')
+    : null
+  const badgeText = tooLargeLabel ?? counterText
+
   // Why: the filter itself is undebounced, but a polite live region that changes
   // on every keystroke produces continuous speech and makes the field unusable.
   useEffect(() => {
+    if (tooLargeMessage) {
+      setAnnouncement(tooLargeMessage)
+      return
+    }
     if (!isFiltering) {
       setAnnouncement('')
       return
@@ -71,7 +89,7 @@ export default function WorkspaceKanbanSearchField({
       ANNOUNCE_DEBOUNCE_MS
     )
     return () => window.clearTimeout(timer)
-  }, [isFiltering, matchCount, totalCount])
+  }, [isFiltering, matchCount, totalCount, tooLargeMessage])
 
   return (
     <div className="relative flex min-w-0 max-w-xs flex-1 items-center">
@@ -87,8 +105,9 @@ export default function WorkspaceKanbanSearchField({
           'auto.components.sidebar.WorkspaceKanbanSearchField.c0cd6bdf6c',
           'Search workspaces'
         )}
+        aria-invalid={isTooLarge || undefined}
         className="h-7 border-worktree-sidebar-border bg-background pl-7 text-xs"
-        style={hasText ? { paddingRight: counterReserve(counterText) } : undefined}
+        style={hasText ? { paddingRight: overlayReserve(badgeText) } : undefined}
         onChange={(event) => onQueryChange(event.target.value)}
         onKeyDown={(event) => {
           // Why: useWorkspaceBoardPanel defers Escape to board text fields, so
@@ -108,7 +127,17 @@ export default function WorkspaceKanbanSearchField({
       />
       {hasText ? (
         <div className="absolute right-1 flex items-center gap-0.5">
-          {counterText ? (
+          {/* Why: a discarded query looks exactly like one that matched
+              everything, so the field has to say which it was. */}
+          {tooLargeLabel ? (
+            <span
+              aria-hidden="true"
+              title={tooLargeMessage ?? undefined}
+              className="text-[10px] text-destructive"
+            >
+              {tooLargeLabel}
+            </span>
+          ) : counterText ? (
             <span aria-hidden="true" className="text-[10px] tabular-nums text-muted-foreground">
               {counterText}
             </span>

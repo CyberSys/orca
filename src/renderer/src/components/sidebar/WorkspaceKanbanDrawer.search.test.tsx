@@ -13,6 +13,7 @@ type HeaderCapture = {
   selectedCount: number
   query: string
   isFiltering: boolean
+  isTooLarge: boolean
   matchCount: number
   totalCount: number
   onQueryChange: (query: string) => void
@@ -385,7 +386,12 @@ describe('WorkspaceKanbanDrawer search', () => {
     expect(laneIds('todo')).toHaveLength(4)
     expect(laneIds('in-review')).toEqual([omega.id])
     expect(gridState.current?.hasQuery).toBe(false)
-    expect(headerState.current).toMatchObject({ isFiltering: false, matchCount: 5, totalCount: 5 })
+    expect(headerState.current).toMatchObject({
+      isFiltering: false,
+      isTooLarge: true,
+      matchCount: 5,
+      totalCount: 5
+    })
   })
 
   it('ranks a drop into a filtered lane against the full lane, not the rendered one', () => {

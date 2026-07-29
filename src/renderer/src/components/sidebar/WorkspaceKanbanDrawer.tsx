@@ -195,11 +195,12 @@ export default function WorkspaceKanbanDrawer({
     () => new Map(boardDragGroups.map((group) => [group.key, group.worktreeIds])),
     [boardDragGroups]
   )
-  const { query, setQuery, clearQuery, matchingWorktreeIds, hasQuery } = useWorkspaceKanbanSearch({
-    open,
-    worktrees: boardWorktrees,
-    repoMap
-  })
+  const { query, setQuery, clearQuery, matchingWorktreeIds, hasQuery, isQueryTooLarge } =
+    useWorkspaceKanbanSearch({
+      open,
+      worktrees: boardWorktrees,
+      repoMap
+    })
   const laneViews = useMemo(
     () => buildWorkspaceKanbanLaneViews({ worktreesByStatus, matchingWorktreeIds }),
     [matchingWorktreeIds, worktreesByStatus]
@@ -814,6 +815,7 @@ export default function WorkspaceKanbanDrawer({
           selectedCount={renderedSelectedWorktrees.length}
           query={query}
           isFiltering={hasQuery}
+          isTooLarge={isQueryTooLarge}
           matchCount={matchingWorktreeIds?.size ?? boardWorktrees.length}
           totalCount={boardWorktrees.length}
           onQueryChange={setQuery}

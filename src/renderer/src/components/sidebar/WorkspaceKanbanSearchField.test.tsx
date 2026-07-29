@@ -16,6 +16,7 @@ const onClose = vi.fn()
 function renderField(props: {
   query: string
   isFiltering?: boolean
+  isTooLarge?: boolean
   matchCount?: number
   totalCount?: number
 }): void {
@@ -24,6 +25,7 @@ function renderField(props: {
       <WorkspaceKanbanSearchField
         query={props.query}
         isFiltering={props.isFiltering ?? props.query.trim() !== ''}
+        isTooLarge={props.isTooLarge ?? false}
         matchCount={props.matchCount ?? 0}
         totalCount={props.totalCount ?? 0}
         onQueryChange={onQueryChange}
@@ -159,6 +161,20 @@ describe('WorkspaceKanbanSearchField', () => {
     })
     expect(onClear).toHaveBeenCalledOnce()
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('says so when a query was discarded for length instead of silently not filtering', () => {
+    // Why: an over-bound query and a query that matched everything look
+    // identical — full field, untouched board — without this.
+    renderField({ query: 'x'.repeat(3000), isFiltering: false, isTooLarge: true })
+
+    expect(container.textContent).toContain('Too long')
+    expect(input().getAttribute('aria-invalid')).toBe('true')
+    expect(liveRegion().textContent).toContain('too long')
+
+    renderField({ query: 'orca', matchCount: 3, totalCount: 12 })
+    expect(container.textContent).not.toContain('Too long')
+    expect(input().getAttribute('aria-invalid')).toBeNull()
   })
 
   it('leaves Escape to the IME while a composition is in progress', () => {

@@ -58,6 +58,7 @@ function renderHeader(
     selectedCount: 0,
     query: '',
     isFiltering: false,
+    isTooLarge: false,
     matchCount: 0,
     totalCount: 0,
     onQueryChange: vi.fn(),

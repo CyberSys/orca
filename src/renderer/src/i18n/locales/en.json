@@ -5014,7 +5014,9 @@
           "bdb753c78d": "No workspaces match",
           "4d96c209d6": "{{value0}} of {{value1}} workspaces match",
           "c0cd6bdf6c": "Search workspaces",
-          "3b7ea51793": "Clear search"
+          "3b7ea51793": "Clear search",
+          "7f1c2e94a5": "Search text is too long — the board is unfiltered",
+          "9a4d0f6b21": "Too long"
         }
       },
       "shared": {

@@ -1,4 +1,5 @@
 import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
+import { isWorktreePaletteQueryTooLarge } from '@/lib/worktree-palette-query-bounds'
 import type { Repo, Worktree } from '../../../../shared/types'
 import { matchWorkspaceBoardWorktrees } from './workspace-kanban-search'
 
@@ -24,6 +25,8 @@ export function useWorkspaceKanbanSearch(args: {
   clearQuery: () => void
   matchingWorktreeIds: ReadonlySet<string> | null
   hasQuery: boolean
+  /** True when the query was discarded for exceeding the palette byte bound. */
+  isQueryTooLarge: boolean
 } {
   const [query, setQuery] = useState('')
 
@@ -68,6 +71,10 @@ export function useWorkspaceKanbanSearch(args: {
     matchingWorktreeIds,
     // Why: an over-bound query is non-empty but non-filtering, and the lane
     // counts must not switch to "n / m" for it.
-    hasQuery: matchingWorktreeIds !== null
+    hasQuery: matchingWorktreeIds !== null,
+    // Why: whitespace-only text is also non-filtering, but it is self-evidently
+    // so. A discarded 2KB paste looks identical to a query that matched
+    // everything, so only that case earns an explanation.
+    isQueryTooLarge: isWorktreePaletteQueryTooLarge(query)
   }
 }

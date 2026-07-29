@@ -12,6 +12,7 @@ type WorkspaceKanbanDrawerHeaderProps = {
   selectedCount: number
   query: string
   isFiltering: boolean
+  isTooLarge: boolean
   matchCount: number
   totalCount: number
   onQueryChange: (query: string) => void
@@ -33,6 +34,7 @@ export default function WorkspaceKanbanDrawerHeader({
   selectedCount,
   query,
   isFiltering,
+  isTooLarge,
   matchCount,
   totalCount,
   onQueryChange,
@@ -75,6 +77,7 @@ export default function WorkspaceKanbanDrawerHeader({
           <WorkspaceKanbanSearchField
             query={query}
             isFiltering={isFiltering}
+            isTooLarge={isTooLarge}
             matchCount={matchCount}
             totalCount={totalCount}
             onQueryChange={onQueryChange}
