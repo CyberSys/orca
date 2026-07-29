@@ -8,10 +8,21 @@ import {
   updateWorktreeSelection
 } from './worktree-multi-selection'
 
-export function useWorkspaceKanbanSelection(open: boolean, boardWorktrees: readonly Worktree[]) {
+// Why: board search hides cards without dropping them from the board, so range
+// and area gestures index the rendered subset while pruning still spans the
+// whole board — otherwise a query would silently discard hidden selections.
+export function useWorkspaceKanbanSelection(
+  open: boolean,
+  boardWorktrees: readonly Worktree[],
+  renderedWorktrees: readonly Worktree[] = boardWorktrees
+) {
   const boardWorktreeIds = useMemo(
     () => boardWorktrees.map((worktree) => worktree.id),
     [boardWorktrees]
+  )
+  const renderedWorktreeIds = useMemo(
+    () => renderedWorktrees.map((worktree) => worktree.id),
+    [renderedWorktrees]
   )
   const [selectedWorktreeIds, setSelectedWorktreeIds] = useState<Set<string>>(new Set())
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
@@ -43,7 +54,7 @@ export function useWorkspaceKanbanSelection(open: boolean, boardWorktrees: reado
     (event: React.MouseEvent<HTMLElement>, worktreeId: string): boolean => {
       const intent = getWorktreeSelectionIntent(event, navigator.userAgent.includes('Mac'))
       const result = updateWorktreeSelection({
-        visibleIds: boardWorktreeIds,
+        visibleIds: renderedWorktreeIds,
         previousSelectedIds: selectedWorktreeIds,
         previousAnchorId: selectionAnchorId,
         targetId: worktreeId,
@@ -53,7 +64,7 @@ export function useWorkspaceKanbanSelection(open: boolean, boardWorktrees: reado
       setSelectionAnchorId(result.anchorId)
       return intent !== 'replace'
     },
-    [boardWorktreeIds, selectedWorktreeIds, selectionAnchorId]
+    [renderedWorktreeIds, selectedWorktreeIds, selectionAnchorId]
   )
 
   const selectForContextMenu = useCallback(
@@ -76,7 +87,7 @@ export function useWorkspaceKanbanSelection(open: boolean, boardWorktrees: reado
       baseAnchorId: string | null = selectionAnchorId
     ): void => {
       const result = updateWorktreeAreaSelection({
-        visibleIds: boardWorktreeIds,
+        visibleIds: renderedWorktreeIds,
         previousSelectedIds: baseSelectedIds,
         previousAnchorId: baseAnchorId,
         areaIds,
@@ -89,7 +100,7 @@ export function useWorkspaceKanbanSelection(open: boolean, boardWorktrees: reado
         previous === result.anchorId ? previous : result.anchorId
       )
     },
-    [boardWorktreeIds, selectedWorktreeIds, selectionAnchorId]
+    [renderedWorktreeIds, selectedWorktreeIds, selectionAnchorId]
   )
 
   const clearSelection = useCallback(() => {

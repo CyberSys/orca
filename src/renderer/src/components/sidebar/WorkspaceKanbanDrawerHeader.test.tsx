@@ -57,6 +57,7 @@ function renderHeader(
   return WorkspaceKanbanDrawerHeader({
     selectedCount: 0,
     query: '',
+    isFiltering: false,
     matchCount: 0,
     totalCount: 0,
     onQueryChange: vi.fn(),
@@ -92,18 +93,33 @@ describe('WorkspaceKanbanDrawerHeader', () => {
   })
 
   it('renders the search field as a sibling of the sheet title, not inside it', () => {
-    const header = renderHeader(vi.fn(), { query: 'orca', matchCount: 2, totalCount: 15 })
+    const header = renderHeader(vi.fn(), {
+      query: 'orca',
+      isFiltering: true,
+      matchCount: 2,
+      totalCount: 15
+    })
 
     const title = findByType(header, SheetTitle)
     expect(title).not.toBeNull()
     expect(findByType(title, WorkspaceKanbanSearchField)).toBeNull()
 
     const field = findByType(header, WorkspaceKanbanSearchField)
-    expect(field?.props).toMatchObject({ query: 'orca', matchCount: 2, totalCount: 15 })
+    expect(field?.props).toMatchObject({
+      query: 'orca',
+      isFiltering: true,
+      matchCount: 2,
+      totalCount: 15
+    })
   })
 
   it('keeps the filter, settings, and close cluster reachable alongside the field', () => {
-    const header = renderHeader(vi.fn(), { query: 'orca', matchCount: 2, totalCount: 15 })
+    const header = renderHeader(vi.fn(), {
+      query: 'orca',
+      isFiltering: true,
+      matchCount: 2,
+      totalCount: 15
+    })
 
     expect(findByType(header, SidebarFilter)).not.toBeNull()
     expect(findByType(header, WorkspaceKanbanSettingsMenu)).not.toBeNull()

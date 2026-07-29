@@ -6,6 +6,7 @@ import {
   getWorkspaceKanbanSidebarDropGroups,
   getWorkspaceKanbanSidebarDropTarget,
   isWorkspaceKanbanSidebarDropPointInBoard,
+  resolveWorkspaceKanbanSidebarFullLaneDropIndex,
   updateWorkspaceKanbanSidebarDropTargetVisual
 } from './workspace-kanban-sidebar-drop'
 
@@ -257,16 +258,33 @@ describe('workspace kanban sidebar drop DOM bridge', () => {
     ])
   })
 
-  it('translates the rendered drop index onto the full lane', () => {
+  it('keeps the tracked drop target in the rendered index space of the indicator', () => {
+    const { lane } = appendBoard()
+    lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
+    setElementFromPoint(lane)
+
+    expect(getWorkspaceKanbanSidebarDropTarget(24, 60)).toMatchObject({
+      status: 'doing',
+      dropIndex: 1
+    })
+  })
+
+  it('translates a rendered drop index onto the full lane at the commit boundary', () => {
     const { lane } = appendBoard()
     lane.dataset.workspaceLaneFullIds = ['doing-x', 'doing-a', 'doing-y', 'doing-b'].join('\n')
     setElementFromPoint(lane)
 
     // Rendered index 1 means "before doing-b", which is index 3 in the full lane.
-    expect(getWorkspaceKanbanSidebarDropTarget(24, 60)).toMatchObject({
-      status: 'doing',
-      dropIndex: 3
-    })
+    expect(resolveWorkspaceKanbanSidebarFullLaneDropIndex('doing', 1)).toBe(3)
+    // Why: a tracked target can be committed after the pointer left the lane,
+    // so the translation must not depend on the current pointer position.
+    expect(resolveWorkspaceKanbanSidebarFullLaneDropIndex('doing', 2)).toBe(4)
+  })
+
+  it('passes the drop index through for a lane it cannot find', () => {
+    appendBoard()
+
+    expect(resolveWorkspaceKanbanSidebarFullLaneDropIndex('todo', 2)).toBe(2)
   })
 
   it('marks and clears the external board hover target', () => {

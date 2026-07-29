@@ -204,6 +204,15 @@ export default function WorkspaceKanbanDrawer({
     () => buildWorkspaceKanbanLaneViews({ worktreesByStatus, matchingWorktreeIds }),
     [matchingWorktreeIds, worktreesByStatus]
   )
+  // Why: range and area gestures must index the cards the user can actually see,
+  // or a shift-click across a filtered gap silently selects hidden workspaces.
+  const renderedBoardWorktrees = useMemo(
+    () =>
+      matchingWorktreeIds
+        ? boardWorktrees.filter((worktree) => matchingWorktreeIds.has(worktree.id))
+        : boardWorktrees,
+    [boardWorktrees, matchingWorktreeIds]
+  )
   const {
     selectedWorktreeIds,
     selectedWorktrees,
@@ -212,7 +221,7 @@ export default function WorkspaceKanbanDrawer({
     updateSelectionForArea,
     clearSelection,
     selectForContextMenu
-  } = useWorkspaceKanbanSelection(open, boardWorktrees)
+  } = useWorkspaceKanbanSelection(open, boardWorktrees, renderedBoardWorktrees)
   const { handleAreaSelectionPointerDown } = useWorkspaceKanbanAreaSelection({
     open,
     boardRef,
@@ -800,8 +809,11 @@ export default function WorkspaceKanbanDrawer({
         }}
       >
         <WorkspaceKanbanDrawerHeader
-          selectedCount={selectedWorktrees.length}
+          // Why: the badge has to count what a drag or context-menu action will
+          // actually move, which under a query is the rendered subset.
+          selectedCount={renderedSelectedWorktrees.length}
           query={query}
+          isFiltering={hasQuery}
           matchCount={matchingWorktreeIds?.size ?? boardWorktrees.length}
           totalCount={boardWorktrees.length}
           onQueryChange={setQuery}

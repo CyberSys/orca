@@ -4350,7 +4350,7 @@
         "WorkspaceKanbanStatusLane": {
           "8ad104642b": "Vacío",
           "3611d1ae7f": "Cambiar tamaño de columnas del tablero de espacios de trabajo",
-          "2df01a03ff": "No matches"
+          "2df01a03ff": "No hay coincidencias"
         },
         "WorkspaceStatusAppearancePopover": {
           "514be2f569": "Establecer color de {{value0}} en {{value1}}",
@@ -4988,11 +4988,11 @@
           "parkTerminal": "Park terminal"
         },
         "WorkspaceKanbanSearchField": {
-          "bdb753c78d": "No workspaces match",
-          "4d96c209d6": "{{value0}} of {{value1}} workspaces match",
-          "c0cd6bdf6c": "Search workspaces",
-          "49c266baaa": "Search",
-          "3b7ea51793": "Clear search"
+          "bdb753c78d": "Ningún espacio de trabajo coincide",
+          "4d96c209d6": "{{value0}} de {{value1}} espacios de trabajo coinciden",
+          "c0cd6bdf6c": "Buscar espacios de trabajo",
+          "49c266baaa": "Buscar",
+          "3b7ea51793": "Borrar búsqueda"
         }
       },
       "shared": {

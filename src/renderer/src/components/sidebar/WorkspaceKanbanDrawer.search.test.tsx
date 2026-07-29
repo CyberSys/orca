@@ -9,7 +9,9 @@ import WorkspaceKanbanDrawer from './WorkspaceKanbanDrawer'
 import type { WorkspaceKanbanLaneView } from './workspace-kanban-search'
 
 type HeaderCapture = {
+  selectedCount: number
   query: string
+  isFiltering: boolean
   matchCount: number
   totalCount: number
   onQueryChange: (query: string) => void
@@ -42,7 +44,8 @@ const {
   headerState,
   gridState,
   pointerDragState,
-  selectionState
+  selectionState,
+  selectionScopeState
 } = vi.hoisted(() => ({
   syncWorkspaceBoardTaskStatusesMock: vi.fn(() =>
     Promise.resolve({ updated: 1, skipped: 0, failed: 0, messages: [] })
@@ -50,7 +53,8 @@ const {
   headerState: { current: null as HeaderCapture | null },
   gridState: { current: null as GridCapture | null },
   pointerDragState: { current: null as PointerDragCapture | null },
-  selectionState: { current: [] as Worktree[] }
+  selectionState: { current: [] as Worktree[] },
+  selectionScopeState: { current: [] as readonly Worktree[] }
 }))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -88,15 +92,22 @@ vi.mock('./use-visible-workspace-kanban-worktree-ids', () => ({
 }))
 
 vi.mock('./use-workspace-kanban-selection', () => ({
-  useWorkspaceKanbanSelection: () => ({
-    selectedWorktreeIds: new Set(selectionState.current.map((worktree) => worktree.id)),
-    selectedWorktrees: selectionState.current,
-    selectionAnchorId: null,
-    updateSelectionForGesture: vi.fn(),
-    updateSelectionForArea: vi.fn(),
-    clearSelection: vi.fn(),
-    selectForContextMenu: vi.fn(() => selectionState.current)
-  })
+  useWorkspaceKanbanSelection: (
+    _open: boolean,
+    boardWorktrees: readonly Worktree[],
+    renderedWorktrees?: readonly Worktree[]
+  ) => {
+    selectionScopeState.current = renderedWorktrees ?? boardWorktrees
+    return {
+      selectedWorktreeIds: new Set(selectionState.current.map((worktree) => worktree.id)),
+      selectedWorktrees: selectionState.current,
+      selectionAnchorId: null,
+      updateSelectionForGesture: vi.fn(),
+      updateSelectionForArea: vi.fn(),
+      clearSelection: vi.fn(),
+      selectForContextMenu: vi.fn(() => selectionState.current)
+    }
+  }
 }))
 
 vi.mock('./use-workspace-kanban-area-selection', () => ({
@@ -217,6 +228,7 @@ beforeEach(() => {
   gridState.current = null
   pointerDragState.current = null
   selectionState.current = []
+  selectionScopeState.current = []
   syncWorkspaceBoardTaskStatusesMock.mockClear()
   updateWorktreesMeta = vi.fn<UpdateWorktreesMeta>(() => Promise.resolve())
   useAppStore.setState({
@@ -332,6 +344,34 @@ describe('WorkspaceKanbanDrawer search', () => {
 
     expect(gridState.current?.selectedWorktreeIds.has(alpha.id)).toBe(true)
     expect(gridState.current?.selectedWorktrees).toEqual([gamma])
+  })
+
+  it('counts only the rendered cards in the header selection badge', () => {
+    selectionState.current = [alpha, gamma]
+    renderDrawer()
+    expect(headerState.current?.selectedCount).toBe(2)
+
+    typeQuery('gamma')
+
+    expect(headerState.current?.selectedCount).toBe(1)
+  })
+
+  it('scopes selection gestures to the rendered cards', () => {
+    renderDrawer()
+    expect(selectionScopeState.current).toHaveLength(5)
+
+    typeQuery('gamma')
+
+    expect(selectionScopeState.current).toEqual([gamma])
+  })
+
+  it('reports a non-filtering query so the header withholds match counts', () => {
+    renderDrawer()
+
+    typeQuery('   ')
+
+    expect(headerState.current).toMatchObject({ isFiltering: false, matchCount: 5, totalCount: 5 })
+    expect(laneIds('todo')).toHaveLength(4)
   })
 
   it('ranks a drop into a filtered lane against the full lane, not the rendered one', () => {

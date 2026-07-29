@@ -111,24 +111,30 @@ export function getWorkspaceKanbanSidebarDropTarget(
   if (!board) {
     return { status: null, isPinDrop: false, dropIndex: 0 }
   }
-  const target = getCardDropTarget(board, x, y)
-  if (!target.status) {
-    return target
-  }
-  const lane = getStatusDropTargetElement(board, target.status)
+  return getCardDropTarget(board, x, y)
+}
+
+/**
+ * Translates a tracked drop index — which counts *rendered* cards, matching the
+ * drop indicator — onto the full lane that `getWorkspaceKanbanSidebarDropGroups`
+ * reports. Call this once, at the commit boundary: a tracked target can be
+ * committed after the pointer has left the lane, so translating earlier would
+ * miss that path.
+ */
+export function resolveWorkspaceKanbanSidebarFullLaneDropIndex(
+  status: WorkspaceStatus,
+  renderedDropIndex: number
+): number {
+  const board = getWorkspaceKanbanBoardElement()
+  const lane = board ? getStatusDropTargetElement(board, status) : null
   if (!lane) {
-    return target
+    return renderedDropIndex
   }
-  // Why: getCardDropTarget counts rendered cards, but the groups above are the
-  // full lane. Committing the two together would interpolate the wrong rank.
-  return {
-    ...target,
-    dropIndex: resolveFullLaneDropIndex({
-      fullLaneIds: getLaneFullWorktreeIds(lane),
-      renderedIds: getRenderedLaneCardIds(lane),
-      filteredDropIndex: target.dropIndex
-    })
-  }
+  return resolveFullLaneDropIndex({
+    fullLaneIds: getLaneFullWorktreeIds(lane),
+    renderedIds: getRenderedLaneCardIds(lane),
+    filteredDropIndex: renderedDropIndex
+  })
 }
 
 export function updateWorkspaceKanbanSidebarDropTargetVisual(args: {

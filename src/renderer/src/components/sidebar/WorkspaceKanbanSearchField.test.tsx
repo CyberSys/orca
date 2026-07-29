@@ -12,11 +12,17 @@ let root: Root
 const onQueryChange = vi.fn()
 const onClear = vi.fn()
 
-function renderField(props: { query: string; matchCount?: number; totalCount?: number }): void {
+function renderField(props: {
+  query: string
+  isFiltering?: boolean
+  matchCount?: number
+  totalCount?: number
+}): void {
   act(() => {
     root.render(
       <WorkspaceKanbanSearchField
         query={props.query}
+        isFiltering={props.isFiltering ?? props.query.trim() !== ''}
         matchCount={props.matchCount ?? 0}
         totalCount={props.totalCount ?? 0}
         onQueryChange={onQueryChange}
@@ -95,6 +101,18 @@ describe('WorkspaceKanbanSearchField', () => {
     expect(count?.textContent).toBe('3 / 12')
     expect(clearButton()?.getAttribute('aria-hidden')).toBeNull()
     expect(clearButton()?.getAttribute('aria-label')).toBe('Clear search')
+  })
+
+  it('withholds counts for text that never narrows the board', () => {
+    renderField({ query: '   ', isFiltering: false, matchCount: 12, totalCount: 12 })
+
+    expect(container.querySelector('span[aria-hidden="true"]')).toBeNull()
+    expect(clearButton()).not.toBeNull()
+
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    expect(liveRegion().textContent).toBe('')
   })
 
   it('announces match counts only after the query settles', () => {

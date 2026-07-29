@@ -11,6 +11,7 @@ import { translate } from '@/i18n/i18n'
 type WorkspaceKanbanDrawerHeaderProps = {
   selectedCount: number
   query: string
+  isFiltering: boolean
   matchCount: number
   totalCount: number
   onQueryChange: (query: string) => void
@@ -31,6 +32,7 @@ type WorkspaceKanbanDrawerHeaderProps = {
 export default function WorkspaceKanbanDrawerHeader({
   selectedCount,
   query,
+  isFiltering,
   matchCount,
   totalCount,
   onQueryChange,
@@ -72,6 +74,7 @@ export default function WorkspaceKanbanDrawerHeader({
           </SheetTitle>
           <WorkspaceKanbanSearchField
             query={query}
+            isFiltering={isFiltering}
             matchCount={matchCount}
             totalCount={totalCount}
             onQueryChange={onQueryChange}

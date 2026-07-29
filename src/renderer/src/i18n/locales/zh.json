@@ -4331,7 +4331,7 @@
         "WorkspaceKanbanStatusLane": {
           "8ad104642b": "空的",
           "3611d1ae7f": "调整工作区板列的大小",
-          "2df01a03ff": "No matches"
+          "2df01a03ff": "没有匹配项"
         },
         "WorkspaceStatusAppearancePopover": {
           "514be2f569": "将 {{value0}} 颜色设置为 {{value1}}",
@@ -4988,11 +4988,11 @@
           "parkTerminal": "Park terminal"
         },
         "WorkspaceKanbanSearchField": {
-          "bdb753c78d": "No workspaces match",
-          "4d96c209d6": "{{value0}} of {{value1}} workspaces match",
-          "c0cd6bdf6c": "Search workspaces",
-          "49c266baaa": "Search",
-          "3b7ea51793": "Clear search"
+          "bdb753c78d": "没有匹配的工作区",
+          "4d96c209d6": "{{value1}} 个工作区中有 {{value0}} 个匹配",
+          "c0cd6bdf6c": "搜索工作区",
+          "49c266baaa": "搜索",
+          "3b7ea51793": "清除搜索"
         }
       },
       "shared": {

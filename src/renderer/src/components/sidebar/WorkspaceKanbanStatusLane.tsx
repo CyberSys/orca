@@ -21,6 +21,7 @@ import { translate } from '@/i18n/i18n'
 type WorkspaceKanbanStatusLaneProps = {
   status: WorkspaceStatusDefinition
   items: readonly Worktree[]
+  /** Lane membership before search filtering; defaults to the rendered items. */
   totalCount?: number
   hasQuery?: boolean
   fullWorktreeIds?: readonly string[]
@@ -75,6 +76,10 @@ export default function WorkspaceKanbanStatusLane({
   onColumnResizeKeyDown
 }: WorkspaceKanbanStatusLaneProps): React.JSX.Element {
   const meta = getWorkspaceStatusVisualMeta(status)
+  // Why: a lane that is empty on its own merits is still "Empty" under a query —
+  // only a lane whose cards were filtered away has anything to say about matches.
+  const laneTotalCount = totalCount ?? items.length
+  const isFiltered = hasQuery && laneTotalCount > 0
   const createTooltip = canCreateWorktree
     ? `New workspace in ${status.label}`
     : 'Add a project to create workspaces'
@@ -98,9 +103,13 @@ export default function WorkspaceKanbanStatusLane({
       data-workspace-status={status.id}
       // Why: sidebar→board drops read lane membership straight out of the DOM,
       // where a search query would otherwise leave them only the rendered cards.
-      data-workspace-lane-full-ids={serializeWorkspaceLaneFullIds(
-        fullWorktreeIds ?? items.map((worktree) => worktree.id)
-      )}
+      // Unfiltered lanes stay off this channel — the rendered scan already is the
+      // full lane, and every board id in an attribute is real DOM weight.
+      data-workspace-lane-full-ids={
+        hasQuery
+          ? serializeWorkspaceLaneFullIds(fullWorktreeIds ?? items.map((worktree) => worktree.id))
+          : undefined
+      }
       data-contextual-tour-target={
         status.id === 'completed' ? 'workspace-board-done-lane' : undefined
       }
@@ -152,7 +161,7 @@ export default function WorkspaceKanbanStatusLane({
             {status.label}
           </div>
           <div className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
-            {hasQuery ? `${items.length} / ${totalCount ?? items.length}` : items.length}
+            {isFiltered ? `${items.length} / ${laneTotalCount}` : items.length}
           </div>
         </div>
         <Tooltip>
@@ -192,7 +201,7 @@ export default function WorkspaceKanbanStatusLane({
           </div>
         ) : (
           <div className="flex h-20 items-center justify-center rounded-md border border-dashed border-border/70 text-[11px] text-muted-foreground">
-            {hasQuery
+            {isFiltered
               ? translate(
                   'auto.components.sidebar.WorkspaceKanbanStatusLane.2df01a03ff',
                   'No matches'

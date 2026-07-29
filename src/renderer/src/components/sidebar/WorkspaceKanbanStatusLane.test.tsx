@@ -111,6 +111,14 @@ describe('WorkspaceKanbanStatusLane', () => {
     expect(container.textContent).not.toContain('No matches')
   })
 
+  it('leaves an already-empty lane as Empty under a query rather than "No matches"', () => {
+    renderLane({ items: [], totalCount: 0, hasQuery: true, fullWorktreeIds: [] })
+
+    expect(container.textContent).toContain('Empty')
+    expect(container.textContent).not.toContain('No matches')
+    expect(container.textContent).not.toContain('0 / 0')
+  })
+
   it('publishes the full lane membership even when the rendered set is a subset', () => {
     renderLane({
       items: [worktree('b')],
@@ -121,5 +129,18 @@ describe('WorkspaceKanbanStatusLane', () => {
 
     expect(lane().dataset.workspaceLaneFullIds).toBe('a\nb\nc')
     expect(container.querySelectorAll('[data-workspace-board-card-id]')).toHaveLength(1)
+  })
+
+  it('stays off the full-id channel when nothing is filtered', () => {
+    // Why: without a query the rendered card scan already is the full lane, and
+    // the attribute would carry every board id for no reader.
+    renderLane({
+      items: [worktree('a'), worktree('b')],
+      totalCount: 2,
+      hasQuery: false,
+      fullWorktreeIds: ['a', 'b']
+    })
+
+    expect(lane().dataset.workspaceLaneFullIds).toBeUndefined()
   })
 })

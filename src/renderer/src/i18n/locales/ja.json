@@ -4331,7 +4331,7 @@
         "WorkspaceKanbanStatusLane": {
           "8ad104642b": "空の",
           "3611d1ae7f": "ワークスペースボードの列のサイズを変更する",
-          "2df01a03ff": "No matches"
+          "2df01a03ff": "一致なし"
         },
         "WorkspaceStatusAppearancePopover": {
           "514be2f569": "{{value0}} の色を {{value1}} に設定します",
@@ -4988,11 +4988,11 @@
           "parkTerminal": "Park terminal"
         },
         "WorkspaceKanbanSearchField": {
-          "bdb753c78d": "No workspaces match",
-          "4d96c209d6": "{{value0}} of {{value1}} workspaces match",
-          "c0cd6bdf6c": "Search workspaces",
-          "49c266baaa": "Search",
-          "3b7ea51793": "Clear search"
+          "bdb753c78d": "一致するワークスペースはありません",
+          "4d96c209d6": "{{value1}} 件中 {{value0}} 件のワークスペースが一致します",
+          "c0cd6bdf6c": "ワークスペースの検索",
+          "49c266baaa": "検索",
+          "3b7ea51793": "検索をクリア"
         }
       },
       "shared": {
