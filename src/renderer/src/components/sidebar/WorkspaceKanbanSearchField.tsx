@@ -12,6 +12,10 @@ const ANNOUNCE_DEBOUNCE_MS = 400
 // over-reserve and '/' and ' ' are narrower still.
 const CLEAR_BUTTON_RESERVE_PX = 32
 const OVERLAY_GAP_PX = 4
+// Why: a wide counter in a narrow drawer could otherwise reserve the whole
+// field and squeeze the typed text to nothing. Overlapping the counter is the
+// better failure at that size.
+const MAX_OVERLAY_RESERVE = '55%'
 
 type WorkspaceKanbanSearchFieldProps = {
   query: string
@@ -27,11 +31,12 @@ type WorkspaceKanbanSearchFieldProps = {
   onClose: () => void
 }
 
-function overlayReserve(overlayText: string | null): string {
+/** Exported for test: happy-dom drops `min()`, so this cannot be read back off a style. */
+export function overlayReserve(overlayText: string | null): string {
   if (!overlayText) {
     return `${CLEAR_BUTTON_RESERVE_PX}px`
   }
-  return `calc(${CLEAR_BUTTON_RESERVE_PX + OVERLAY_GAP_PX}px + ${overlayText.length}ch)`
+  return `min(calc(${CLEAR_BUTTON_RESERVE_PX + OVERLAY_GAP_PX}px + ${overlayText.length}ch), ${MAX_OVERLAY_RESERVE})`
 }
 
 function formatAnnouncement(matchCount: number, totalCount: number): string {

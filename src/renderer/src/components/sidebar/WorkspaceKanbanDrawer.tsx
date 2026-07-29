@@ -759,6 +759,13 @@ export default function WorkspaceKanbanDrawer({
           // its tooltip without hover and makes the drawer feel noisy.
           event.preventDefault()
         }}
+        onEscapeKeyDown={(event) => {
+          // Why: the board owns Escape — useWorkspaceBoardPanel closes it, and
+          // defers to board text fields so the search field can clear itself.
+          // Radix's own dismiss would bypass both, so keep it out of the path
+          // rather than relying on handleSheetOpenChange dropping the request.
+          event.preventDefault()
+        }}
         onPointerDownOutside={(event) => {
           const originalEvent = event.detail.originalEvent
           const target = originalEvent.target

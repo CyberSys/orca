@@ -2,7 +2,9 @@
 // unusable as a separator in the `data-workspace-lane-full-ids` channel — a
 // POSIX path may contain any byte but NUL and '/', and a Windows path carries
 // a drive colon. NUL is the one character no path can hold, so it cannot split
-// an id into phantom lane members.
+// an id into phantom lane members. Verified to round-trip through setAttribute
+// and dataset in Chromium — but HTML *parsing* rewrites NUL to U+FFFD, so this
+// channel must stay setAttribute-only and never pass through innerHTML.
 export const WORKSPACE_LANE_FULL_IDS_DELIMITER = '\0'
 
 /**

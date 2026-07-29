@@ -20,24 +20,10 @@ function resolveRenderedAnchorId(
   return renderedWorktreeIds.find((id) => selectedWorktreeIds.has(id)) ?? null
 }
 
-function withHiddenSelections(
-  nextSelectedIds: ReadonlySet<string>,
-  previousSelectedIds: ReadonlySet<string>,
-  renderedWorktreeIds: readonly string[]
-): Set<string> {
-  const rendered = new Set(renderedWorktreeIds)
-  const merged = new Set(nextSelectedIds)
-  for (const id of previousSelectedIds) {
-    if (!rendered.has(id)) {
-      merged.add(id)
-    }
-  }
-  return merged
-}
-
 // Why: board search hides cards without dropping them from the board, so range
 // and area gestures index the rendered subset while pruning still spans the
-// whole board — otherwise a query would silently discard hidden selections.
+// whole board — a card hidden by a query keeps its selection until a gesture
+// replaces it, and every action path narrows to the rendered cards anyway.
 export function useWorkspaceKanbanSelection(
   open: boolean,
   boardWorktrees: readonly Worktree[],
@@ -96,14 +82,10 @@ export function useWorkspaceKanbanSelection(
         targetId: worktreeId,
         intent
       })
-      // Why: a range replaces the selection with what it spans, which spans only
-      // rendered cards. Selections the query is hiding are not part of the
-      // gesture and must survive it.
-      setSelectedWorktreeIds(
-        intent === 'range'
-          ? withHiddenSelections(result.selectedIds, selectedWorktreeIds, renderedWorktreeIds)
-          : result.selectedIds
-      )
+      // Why: a range replaces the selection, exactly like a plain click and a
+      // non-additive marquee. Carrying hidden cards through it would leave the
+      // user with a selection they cannot see, count, or narrow.
+      setSelectedWorktreeIds(result.selectedIds)
       setSelectionAnchorId(result.anchorId)
       return intent !== 'replace'
     },

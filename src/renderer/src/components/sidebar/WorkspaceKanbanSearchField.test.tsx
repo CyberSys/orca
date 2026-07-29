@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import WorkspaceKanbanSearchField from './WorkspaceKanbanSearchField'
+import WorkspaceKanbanSearchField, { overlayReserve } from './WorkspaceKanbanSearchField'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -206,16 +206,16 @@ describe('WorkspaceKanbanSearchField', () => {
     expect(document.activeElement).toBe(input())
   })
 
-  it('reserves counter width in font-relative units so a large count cannot overlap typed text', () => {
+  it('reserves overlay width in font-relative units, capped so text stays visible', () => {
     // '298 / 1024' is 10 characters; a fixed reserve would let it overlap.
-    renderField({ query: 'orca', matchCount: 298, totalCount: 1024 })
-    expect(input().style.paddingRight).toContain('10ch')
+    expect(overlayReserve('298 / 1024')).toContain('10ch')
+    expect(overlayReserve('3 / 9')).toContain('5ch')
 
-    renderField({ query: 'orca', matchCount: 3, totalCount: 9 })
-    expect(input().style.paddingRight).toContain('5ch')
+    // Capped, so a wide counter in a narrow drawer cannot squeeze the typed
+    // text to nothing — overlapping is the better failure at that size.
+    expect(overlayReserve('298 / 1024')).toContain('55%')
 
-    // A non-filtering query shows no counter, so it reserves only the button.
-    renderField({ query: '   ', isFiltering: false })
-    expect(input().style.paddingRight).not.toContain('ch')
+    // No overlay means only the clear button needs clearing.
+    expect(overlayReserve(null)).toBe('32px')
   })
 })
