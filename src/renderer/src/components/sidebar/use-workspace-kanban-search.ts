@@ -74,7 +74,9 @@ export function useWorkspaceKanbanSearch(args: {
     hasQuery: matchingWorktreeIds !== null,
     // Why: whitespace-only text is also non-filtering, but it is self-evidently
     // so. A discarded 2KB paste looks identical to a query that matched
-    // everything, so only that case earns an explanation.
-    isQueryTooLarge: isWorktreePaletteQueryTooLarge(query)
+    // everything, so only that case earns an explanation. Read the deferred
+    // query, not the live one — this describes the board, so it has to change
+    // on the same frame the board does.
+    isQueryTooLarge: isWorktreePaletteQueryTooLarge(deferredQuery)
   }
 }
