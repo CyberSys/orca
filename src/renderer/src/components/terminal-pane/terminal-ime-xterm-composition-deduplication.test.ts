@@ -648,16 +648,17 @@ describe('xterm IME composition de-duplication', () => {
     terminal.dispose()
   })
 
-  it('commits Korean composition to its terminal when compositionend is followed by blur', async () => {
+  it('preserves macOS Korean commit boundaries across blur and refocus', async () => {
     const { emitted, terminal, textarea } = openTerminal()
-    startComposition(textarea, '한')
-    await nextEventLoop()
-
-    textarea.dispatchEvent(new CompositionEvent('compositionend', { data: '한', bubbles: true }))
+    startComposition(textarea, '하')
+    dispatchCompositionEvent(textarea, 'compositionend', '하')
     textarea.dispatchEvent(new FocusEvent('blur'))
+    textarea.dispatchEvent(new FocusEvent('focus'))
+    startComposition(textarea, 'ㄴ ')
+    dispatchCompositionEvent(textarea, 'compositionend', 'ㄴ ')
     await nextEventLoop()
 
-    expect(emitted.join('')).toBe('한')
+    expect(emitted.join('')).toBe('하ㄴ ')
     terminal.dispose()
   })
 
